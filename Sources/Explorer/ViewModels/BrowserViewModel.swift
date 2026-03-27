@@ -104,6 +104,9 @@ final class BrowserViewModel {
                 items = loaded
                 if let newItem = items.first(where: { $0.url == newURL }) {
                     startRename(newItem)
+                } else {
+                    // Item not found after reload — directory watcher may have missed the event
+                    errorMessage = "New folder was created but could not be located for renaming."
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -123,13 +126,22 @@ final class BrowserViewModel {
 
     func paste(into destination: URL) {
         guard !clipboardItems.isEmpty else { return }
+        let isCut = clipboardIsCut
         let items = clipboardItems
         Task {
+            // Filter to items that still exist — clipboard may be stale
+            var existing: [FileItem] = []
+            for item in items {
+                if await fs.exists(at: item.url) { existing.append(item) }
+            }
+            guard !existing.isEmpty else { return }
             do {
-                try await fs.copy(items: items, to: destination)
-                if clipboardIsCut {
-                    try await TrashService.shared.trash(items: items)
+                try await fs.copy(items: existing, to: destination)
+                if isCut {
+                    try await TrashService.shared.trash(items: existing)
+                    // Clear clipboard after a successful cut+paste (fix 20)
                     clipboardItems = []
+                    clipboardIsCut = false
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -147,13 +159,16 @@ final class BrowserViewModel {
             renamingItem = nil
             return
         }
+        // Clear renamingItem immediately before the async operation to avoid state race
+        let capturedItem = item
+        let capturedName = renameText
+        renamingItem = nil
         Task {
             do {
-                _ = try await fs.rename(item: item, to: renameText)
+                _ = try await fs.rename(item: capturedItem, to: capturedName)
             } catch {
                 errorMessage = error.localizedDescription
             }
-            renamingItem = nil
         }
     }
 

@@ -11,7 +11,7 @@ struct PathTokenView: View {
         let components = url.pathComponents
         if components.count <= 1 {
             // Root — show volume name
-            let volumeName = (try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? "Macintosh HD"
+            let volumeName = (try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? url.lastPathComponent
             return volumeName
         }
         return url.lastPathComponent

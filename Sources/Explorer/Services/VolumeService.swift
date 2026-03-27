@@ -26,7 +26,11 @@ final class VolumeService {
         guard let urls = FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: keys,
             options: [.skipHiddenVolumes]
-        ) else { return }
+        ) else {
+            // mountedVolumeURLs() returned nil — keep the existing volume list rather than clearing it
+            print("[VolumeService] mountedVolumeURLs returned nil; retaining previous volume list")
+            return
+        }
 
         volumes = urls.compactMap { url in
             let name = (try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? url.lastPathComponent

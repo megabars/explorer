@@ -15,23 +15,28 @@ final class NavigationState {
 
     func navigate(to url: URL) {
         guard url != currentURL else { return }
+        // Group all three mutations together — @MainActor serialises execution so observers
+        // see a consistent snapshot after the current turn of the run loop.
         backStack.append(currentURL)
         forwardStack.removeAll()
         currentURL = url
         if !history.contains(url) {
-            history.insert(url, at: 0)
-            if history.count > 50 { history.removeLast() }
+            // append + cap avoids O(n) insert(at: 0) cost; history is displayed newest-first via .reversed()
+            history.append(url)
+            if history.count > 100 { history.removeFirst() }
         }
     }
 
     func goBack() {
         guard !backStack.isEmpty else { return }
+        // Group all three mutations together
         forwardStack.append(currentURL)
         currentURL = backStack.removeLast()
     }
 
     func goForward() {
         guard !forwardStack.isEmpty else { return }
+        // Group all three mutations together
         backStack.append(currentURL)
         currentURL = forwardStack.removeLast()
     }

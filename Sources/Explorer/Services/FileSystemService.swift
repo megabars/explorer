@@ -23,6 +23,8 @@ actor FileSystemService {
             includingPropertiesForKeys: Array(resourceKeys),
             options: options
         )
+        // compactMap intentionally drops items whose metadata cannot be read (e.g. TOCTOU races,
+        // permission errors on individual files) to keep the listing partial rather than failing entirely.
         return contents.compactMap { makeFileItem(from: $0) }
             .sorted { a, b in
                 if a.isDirectory != b.isDirectory { return a.isDirectory }
@@ -60,23 +62,22 @@ actor FileSystemService {
 
     func copy(items: [FileItem], to destination: URL) throws {
         for item in items {
-            let destURL = uniqueDestURL(for: item.name, in: destination)
-            try FileManager.default.copyItem(at: item.url, to: destURL)
+            let base = (item.name as NSString).deletingPathExtension
+            let ext = (item.name as NSString).pathExtension
+            var candidate = destination.appendingPathComponent(item.name)
+            var counter = 2
+            // Retry with incremented counter on conflict (avoids TOCTOU from pre-checking existence)
+            while true {
+                do {
+                    try FileManager.default.copyItem(at: item.url, to: candidate)
+                    break
+                } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                    let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+                    candidate = destination.appendingPathComponent(newName)
+                    counter += 1
+                }
+            }
         }
-    }
-
-    /// Returns a non-conflicting destination URL, appending a counter if needed.
-    private func uniqueDestURL(for name: String, in directory: URL) -> URL {
-        let base = (name as NSString).deletingPathExtension
-        let ext = (name as NSString).pathExtension
-        var candidate = directory.appendingPathComponent(name)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: candidate.path) {
-            let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
-            candidate = directory.appendingPathComponent(newName)
-            counter += 1
-        }
-        return candidate
     }
 
     /// Returns a unique folder/file name inside `url` by appending a counter if needed.
@@ -113,6 +114,11 @@ actor FileSystemService {
         return contents
             .filter { prefix.isEmpty || $0.lastPathComponent.lowercased().hasPrefix(prefix.lowercased()) }
             .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            // Filter out symlinks whose targets are not readable (broken or permission-denied symlinks)
+            .filter { url in
+                guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true else { return true }
+                return FileManager.default.isReadableFile(atPath: url.resolvingSymlinksInPath().path)
+            }
             .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
             .prefix(12)
             .map { $0 }

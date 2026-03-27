@@ -22,8 +22,12 @@ struct SidebarItem: Identifiable, Hashable, Sendable {
             (home.appendingPathComponent("Documents"), "Documents", "doc"),
             (home.appendingPathComponent("Downloads"), "Downloads", "arrow.down.circle"),
         ]
-        return candidates.compactMap { url, name, image in
+        var seen = Set<URL>()
+        return candidates.compactMap { url, name, image -> SidebarItem? in
             guard fm.fileExists(atPath: url.path) else { return nil }
+            // Deduplicate by standardized URL to handle symlinks and relative-path aliases
+            let key = url.standardizedFileURL
+            guard seen.insert(key).inserted else { return nil }
             return SidebarItem(id: url, url: url, name: name, systemImage: image, section: .favorites)
         }
     }()

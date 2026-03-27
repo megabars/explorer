@@ -45,8 +45,13 @@ final class AddressBarViewModel {
         completions = []
         // Single isDirectory call covers both existence and type in one syscall
         let isDir = await service.isDirectory(at: url)
-        if isDir { return url }
+        if isDir {
+            guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
+            return url
+        }
         guard await service.exists(at: url) else { return nil }
-        return url.deletingLastPathComponent()
+        let parent = url.deletingLastPathComponent()
+        guard FileManager.default.isReadableFile(atPath: parent.path) else { return nil }
+        return parent
     }
 }

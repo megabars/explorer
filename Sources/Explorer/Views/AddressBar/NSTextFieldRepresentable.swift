@@ -50,7 +50,13 @@ struct FocusedTextField: NSViewRepresentable {
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
-            let value = field.stringValue
+            // Strip control characters (U+0000–U+001F, U+007F) to prevent injection via paste
+            let raw = field.stringValue
+            let value = raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+                .reduce(into: "") { $0.append(Character($1)) }
+            if value != raw {
+                field.stringValue = value
+            }
             parent.text = value
             parent.onTextChange(value)
         }

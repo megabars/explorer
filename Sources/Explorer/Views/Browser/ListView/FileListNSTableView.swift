@@ -117,8 +117,10 @@ struct FileListNSTableView: NSViewRepresentable {
         // MARK: Delegate — cell views
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard row < parent.items.count else { return nil }
-            let item = parent.items[row]
+            // Snapshot to avoid index-out-of-bounds if items mutates between bounds check and access
+            let items = parent.items
+            guard row < items.count else { return nil }
+            let item = items[row]
             let colID = tableColumn?.identifier.rawValue ?? ""
 
             switch colID {
@@ -221,6 +223,7 @@ struct FileListNSTableView: NSViewRepresentable {
             menu.removeAllItems()
             guard let tv = tableView else { return }
             let row = tv.clickedRow
+            // Snapshot to avoid index-out-of-bounds if items mutates between bounds check and access
             let snapshot = parent.items
             guard row >= 0, row < snapshot.count else { return }
             let item = snapshot[row]
