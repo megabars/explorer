@@ -95,11 +95,13 @@ final class BrowserViewModel {
 
     func newFolder(in url: URL) {
         Task {
-            let name = uniqueName("New Folder", in: url)
-            let newURL = url.appendingPathComponent(name)
             do {
+                let name = await fs.uniqueName(for: "New Folder", in: url)
+                let newURL = url.appendingPathComponent(name)
                 try await fs.createDirectory(at: newURL)
-                // Start renaming the new folder
+                // Reload explicitly so the new folder appears in items before we rename
+                let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
+                items = loaded
                 if let newItem = items.first(where: { $0.url == newURL }) {
                     startRename(newItem)
                 }
@@ -165,13 +167,4 @@ final class BrowserViewModel {
         items.filter { selection.contains($0.url) }
     }
 
-    private func uniqueName(_ base: String, in url: URL) -> String {
-        var name = base
-        var counter = 2
-        while FileManager.default.fileExists(atPath: url.appendingPathComponent(name).path) {
-            name = "\(base) \(counter)"
-            counter += 1
-        }
-        return name
-    }
 }

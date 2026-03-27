@@ -199,8 +199,9 @@ struct FileListNSTableView: NSViewRepresentable {
 
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTableView else { return }
+            let snapshot = parent.items
             let urls = Set(tv.selectedRowIndexes.compactMap { row in
-                row < parent.items.count ? parent.items[row].url : nil
+                row < snapshot.count ? snapshot[row].url : nil
             })
             parent.selection = urls
         }
@@ -209,8 +210,9 @@ struct FileListNSTableView: NSViewRepresentable {
 
         @objc func doubleClicked(_ sender: NSTableView) {
             let row = sender.clickedRow
-            guard row >= 0, row < parent.items.count else { return }
-            parent.onOpen(parent.items[row])
+            let snapshot = parent.items
+            guard row >= 0, row < snapshot.count else { return }
+            parent.onOpen(snapshot[row])
         }
 
         // MARK: Context menu
@@ -219,8 +221,9 @@ struct FileListNSTableView: NSViewRepresentable {
             menu.removeAllItems()
             guard let tv = tableView else { return }
             let row = tv.clickedRow
-            guard row >= 0, row < parent.items.count else { return }
-            let item = parent.items[row]
+            let snapshot = parent.items
+            guard row >= 0, row < snapshot.count else { return }
+            let item = snapshot[row]
 
             menu.addItem(withTitle: "Open", action: #selector(menuOpen(_:)), keyEquivalent: "")
                 .representedObject = item.url

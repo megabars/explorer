@@ -15,35 +15,16 @@ struct SidebarItem: Identifiable, Hashable, Sendable {
 
     static let defaults: [SidebarItem] = {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return [
-            SidebarItem(
-                id: home,
-                url: home,
-                name: "Home",
-                systemImage: "house",
-                section: .favorites
-            ),
-            SidebarItem(
-                id: home.appendingPathComponent("Desktop"),
-                url: home.appendingPathComponent("Desktop"),
-                name: "Desktop",
-                systemImage: "menubar.dock.rectangle",
-                section: .favorites
-            ),
-            SidebarItem(
-                id: home.appendingPathComponent("Documents"),
-                url: home.appendingPathComponent("Documents"),
-                name: "Documents",
-                systemImage: "doc",
-                section: .favorites
-            ),
-            SidebarItem(
-                id: home.appendingPathComponent("Downloads"),
-                url: home.appendingPathComponent("Downloads"),
-                name: "Downloads",
-                systemImage: "arrow.down.circle",
-                section: .favorites
-            ),
+        let fm = FileManager.default
+        let candidates: [(URL, String, String)] = [
+            (home, "Home", "house"),
+            (home.appendingPathComponent("Desktop"), "Desktop", "menubar.dock.rectangle"),
+            (home.appendingPathComponent("Documents"), "Documents", "doc"),
+            (home.appendingPathComponent("Downloads"), "Downloads", "arrow.down.circle"),
         ]
+        return candidates.compactMap { url, name, image in
+            guard fm.fileExists(atPath: url.path) else { return nil }
+            return SidebarItem(id: url, url: url, name: name, systemImage: image, section: .favorites)
+        }
     }()
 }

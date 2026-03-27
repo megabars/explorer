@@ -60,16 +60,34 @@ actor FileSystemService {
 
     func copy(items: [FileItem], to destination: URL) throws {
         for item in items {
-            var destURL = destination.appendingPathComponent(item.name)
-            // Avoid overwriting existing files — append " copy"
-            if FileManager.default.fileExists(atPath: destURL.path) {
-                let base = (item.name as NSString).deletingPathExtension
-                let ext = (item.name as NSString).pathExtension
-                let suffix = ext.isEmpty ? "\(base) copy" : "\(base) copy.\(ext)"
-                destURL = destination.appendingPathComponent(suffix)
-            }
+            let destURL = uniqueDestURL(for: item.name, in: destination)
             try FileManager.default.copyItem(at: item.url, to: destURL)
         }
+    }
+
+    /// Returns a non-conflicting destination URL, appending a counter if needed.
+    private func uniqueDestURL(for name: String, in directory: URL) -> URL {
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var candidate = directory.appendingPathComponent(name)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            candidate = directory.appendingPathComponent(newName)
+            counter += 1
+        }
+        return candidate
+    }
+
+    /// Returns a unique folder/file name inside `url` by appending a counter if needed.
+    func uniqueName(for base: String, in url: URL) -> String {
+        var name = base
+        var counter = 2
+        while FileManager.default.fileExists(atPath: url.appendingPathComponent(name).path) {
+            name = "\(base) \(counter)"
+            counter += 1
+        }
+        return name
     }
 
     func completions(for partialPath: String) -> [URL] {
