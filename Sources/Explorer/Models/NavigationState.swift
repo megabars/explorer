@@ -7,7 +7,6 @@ final class NavigationState {
     var currentURL: URL
     private(set) var backStack: [URL] = []
     private(set) var forwardStack: [URL] = []
-    private(set) var history: [URL] = []
 
     init(startURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.currentURL = startURL
@@ -20,23 +19,16 @@ final class NavigationState {
         backStack.append(currentURL)
         forwardStack.removeAll()
         currentURL = url
-        if !history.contains(url) {
-            // append + cap avoids O(n) insert(at: 0) cost; history is displayed newest-first via .reversed()
-            history.append(url)
-            if history.count > 100 { history.removeFirst() }
-        }
     }
 
     func goBack() {
         guard !backStack.isEmpty else { return }
-        // Group all three mutations together
         forwardStack.append(currentURL)
         currentURL = backStack.removeLast()
     }
 
     func goForward() {
         guard !forwardStack.isEmpty else { return }
-        // Group all three mutations together
         backStack.append(currentURL)
         currentURL = forwardStack.removeLast()
     }

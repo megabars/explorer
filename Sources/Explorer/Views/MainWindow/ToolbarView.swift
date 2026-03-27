@@ -39,12 +39,13 @@ struct ExplorerToolbar: ToolbarContent {
             AddressBarView(
                 vm: addressBar,
                 navigation: navigation,
-                fsService: fsService
+                fsService: fsService,
+                showHidden: browser.showHidden
             )
             .frame(minWidth: 500, maxWidth: .infinity)
         }
 
-        // View mode picker + New Folder on the right
+        // View mode picker + controls on the right
         ToolbarItemGroup(placement: .primaryAction) {
             Picker("View Mode", selection: $browser.viewMode) {
                 ForEach(ViewMode.allCases, id: \.self) { mode in
@@ -54,6 +55,14 @@ struct ExplorerToolbar: ToolbarContent {
             .pickerStyle(.segmented)
             .frame(width: 70)
             .help("Switch view mode")
+
+            Button {
+                browser.showHidden.toggle()
+                browser.load(url: navigation.currentURL)
+            } label: {
+                Image(systemName: browser.showHidden ? "eye" : "eye.slash")
+            }
+            .help(browser.showHidden ? "Hide Hidden Files" : "Show Hidden Files")
 
             Button {
                 browser.newFolder(in: navigation.currentURL)

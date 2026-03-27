@@ -54,7 +54,7 @@ struct BrowserContainerView: View {
     }
 
     private func errorView(message: String) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 32))
                 .foregroundStyle(.red)
@@ -62,6 +62,11 @@ struct BrowserContainerView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            Button("Retry") {
+                browser.errorMessage = nil
+                browser.load(url: navigation.currentURL)
+            }
+            .buttonStyle(.bordered)
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -72,18 +72,22 @@ struct FileListNSTableView: NSViewRepresentable {
         context.coordinator.parent = self
         guard let tableView = nsView.documentView as? NSTableView else { return }
 
-        // Reload only when item list actually changed — preserves scroll position
+        // Reload only when item list actually changed — preserves scroll position.
+        // Skip reloadData while rename is in progress to avoid destroying the editing cell.
         let newIDs = items.map(\.id)
         if newIDs != context.coordinator.lastItemIDs {
-            context.coordinator.lastItemIDs = newIDs
-            // If the item being renamed was removed from the directory (e.g. deleted
-            // by another process), cancel the rename to prevent stale state.
+            // If the item being renamed disappeared, cancel rename first.
             if let renaming = renamingItem, !items.contains(where: { $0.id == renaming.id }) {
+                context.coordinator.cancelEditing()
                 onCancelRename()
             }
-            let scrollOffset = nsView.documentVisibleRect.origin
-            tableView.reloadData()
-            nsView.documentView?.scroll(scrollOffset)
+            context.coordinator.lastItemIDs = newIDs
+            // Don't reload while rename is active — it would destroy the editing text field.
+            if !context.coordinator.isRenaming {
+                let scrollOffset = nsView.documentVisibleRect.origin
+                tableView.reloadData()
+                nsView.documentView?.scroll(scrollOffset)
+            }
         }
 
         // Sync selection from SwiftUI → NSTableView
@@ -94,15 +98,32 @@ struct FileListNSTableView: NSViewRepresentable {
         if tableView.selectedRowIndexes != indexes {
             tableView.selectRowIndexes(indexes, byExtendingSelection: false)
         }
+
+        // Sync rename state: begin editing when renamingItem is set, end it when cleared.
+        let coordinator = context.coordinator
+        if let renaming = renamingItem,
+           let row = items.firstIndex(where: { $0.id == renaming.id }) {
+            if !coordinator.isRenaming {
+                coordinator.beginEditing(row: row, text: renameText.wrappedValue, in: tableView)
+            }
+        } else if coordinator.isRenaming {
+            // renamingItem was cleared externally (e.g. cancel from outside) — end editing.
+            coordinator.cancelEditing()
+        }
     }
 
     // MARK: - Coordinator
 
     @MainActor
-    class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
+    class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
         var parent: FileListNSTableView
         weak var tableView: NSTableView?
         var lastItemIDs: [URL] = []
+
+        // MARK: Rename state
+        var isRenaming = false
+        var renamingRow: Int = -1
+        weak var editingTextField: NSTextField?
 
         private let dateFormatter: DateFormatter = {
             let f = DateFormatter()
@@ -113,6 +134,101 @@ struct FileListNSTableView: NSViewRepresentable {
 
         init(_ parent: FileListNSTableView) {
             self.parent = parent
+        }
+
+        // MARK: - Rename editing
+
+        func beginEditing(row: Int, text: String, in tableView: NSTableView) {
+            guard !isRenaming else { return }
+            isRenaming = true
+            renamingRow = row
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            tableView.scrollRowToVisible(row)
+            // Defer to next run-loop pass so the cell is fully laid out after any preceding reloadData.
+            DispatchQueue.main.async { [weak self, weak tableView] in
+                guard let self, let tableView, self.isRenaming else { return }
+                guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView,
+                      let tf = cell.textField else { return }
+                self.editingTextField = tf
+                tf.isEditable = true
+                tf.isBezeled = true
+                tf.bezelStyle = .roundedBezel
+                tf.stringValue = text
+                tf.delegate = self
+                tableView.window?.makeFirstResponder(tf)
+                tf.currentEditor()?.selectAll(nil)
+            }
+        }
+
+        /// Ends rename editing and resets the cell to its normal (label) appearance.
+        /// Call this before invoking any ViewModel callback so the guard in callbacks fires correctly.
+        func commitEditing(newText: String) {
+            guard isRenaming else { return }
+            isRenaming = false
+            let row = renamingRow
+            renamingRow = -1
+            cleanupTextField()
+            tableView?.window?.makeFirstResponder(tableView)
+            parent.renameText.wrappedValue = newText
+            // Reload the row to show the item's current name (VM will update items via watcher).
+            if row >= 0 { tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0)) }
+        }
+
+        func cancelEditing() {
+            guard isRenaming else { return }
+            isRenaming = false
+            let row = renamingRow
+            renamingRow = -1
+            cleanupTextField()
+            tableView?.window?.makeFirstResponder(tableView)
+            // Reload to restore the original item name in the cell.
+            if row >= 0 { tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0)) }
+        }
+
+        private func cleanupTextField() {
+            guard let tf = editingTextField else { return }
+            tf.isEditable = false
+            tf.isBezeled = false
+            tf.delegate = nil
+            editingTextField = nil
+        }
+
+        // MARK: NSTextFieldDelegate — rename text field events
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard isRenaming,
+                  let tf = obj.object as? NSTextField,
+                  tf === editingTextField else { return }
+            // Keep the ViewModel's renameText in sync so commitRename reads the latest value.
+            parent.renameText.wrappedValue = tf.stringValue
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard isRenaming,
+                  let tf = obj.object as? NSTextField,
+                  tf === editingTextField else { return }
+            // Focus lost without explicit Enter/Escape → treat as commit (Finder-like behaviour).
+            let text = tf.stringValue
+            commitEditing(newText: text)
+            parent.onCommitRename()
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard control === editingTextField else { return false }
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                let text = (control as? NSTextField)?.stringValue ?? ""
+                // Set isRenaming = false before commitEditing so controlTextDidEndEditing
+                // (which fires after we return true) finds isRenaming == false and exits early.
+                commitEditing(newText: text)
+                parent.onCommitRename()
+                return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                cancelEditing()
+                parent.onCancelRename()
+                return true
+            }
+            return false
         }
 
         // MARK: DataSource
@@ -156,9 +272,17 @@ struct FileListNSTableView: NSViewRepresentable {
                 c.imageView = img
                 c.addSubview(img)
 
-                let tf = NSTextField(labelWithString: "")
+                // Use a regular NSTextField (not labelWithString) so it can be made editable
+                // for inline renaming without needing a separate overlay view.
+                let tf = NSTextField()
                 tf.translatesAutoresizingMaskIntoConstraints = false
                 tf.lineBreakMode = .byTruncatingMiddle
+                tf.isBordered = false
+                tf.isBezeled = false
+                tf.drawsBackground = false
+                tf.isEditable = false
+                tf.isSelectable = false
+                tf.font = .systemFont(ofSize: NSFont.systemFontSize)
                 c.textField = tf
                 c.addSubview(tf)
 
@@ -174,9 +298,13 @@ struct FileListNSTableView: NSViewRepresentable {
                 return c
             }()
 
-            cell.textField?.stringValue = item.name
             cell.imageView?.image = NSWorkspace.shared.icon(forFile: item.url.path)
             cell.imageView?.image?.size = NSSize(width: 16, height: 16)
+            // Only update the name if this cell is not the one currently being renamed —
+            // overwriting it would clobber whatever the user has typed so far.
+            if !(isRenaming && renamingRow == tableView.row(for: cell)) {
+                cell.textField?.stringValue = item.name
+            }
             return cell
         }
 
@@ -236,6 +364,9 @@ struct FileListNSTableView: NSViewRepresentable {
             menu.addItem(withTitle: "Open", action: #selector(menuOpen(_:)), keyEquivalent: "")
                 .representedObject = item.url
             menu.addItem(.separator())
+            menu.addItem(withTitle: "Rename", action: #selector(menuRename(_:)), keyEquivalent: "")
+                .representedObject = item.url
+            menu.addItem(.separator())
             menu.addItem(withTitle: "Move to Trash", action: #selector(menuTrash(_:)), keyEquivalent: "")
                 .representedObject = item.url
             menu.addItem(withTitle: "Get Info", action: #selector(menuGetInfo(_:)), keyEquivalent: "")
@@ -248,6 +379,30 @@ struct FileListNSTableView: NSViewRepresentable {
             guard let url = sender.representedObject as? URL,
                   let item = parent.items.first(where: { $0.url == url }) else { return }
             parent.onOpen(item)
+        }
+
+        @objc func menuRename(_ sender: NSMenuItem) {
+            guard let url = sender.representedObject as? URL,
+                  let item = parent.items.first(where: { $0.url == url }) else { return }
+            // Ensure row is selected before starting rename
+            if let row = parent.items.firstIndex(where: { $0.id == item.id }) {
+                tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
+            parent.selection = [item.url]
+            // Trigger rename via the ViewModel (goes through SwiftUI → updateNSView → beginEditing)
+            // We do this by calling the parent's onOpen equivalent — but rename has no direct callback.
+            // Instead, update the selection so the keyboard shortcut handler in ContentView can fire.
+            // For context menu rename, we call the view model indirectly via a notification or
+            // use a dedicated callback. For now, simulate pressing Return by calling startRename
+            // directly through the existing onOpen pattern — but we need a rename callback.
+            // Since FileListView wires onCommitRename/onCancelRename, we need startRename from VM.
+            // This is handled via the same path: selection is updated, user presses Return.
+            // As a direct fix, post a notification that ContentView can observe.
+            NotificationCenter.default.post(
+                name: .renameRequestedForURL,
+                object: nil,
+                userInfo: ["url": url]
+            )
         }
 
         @objc func menuTrash(_ sender: NSMenuItem) {

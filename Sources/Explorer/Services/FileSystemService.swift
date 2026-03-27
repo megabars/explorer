@@ -90,7 +90,8 @@ actor FileSystemService {
         }
     }
 
-    func completions(for partialPath: String) -> [URL] {
+    /// Returns completions for the given partial path, filtered by directory and optionally hidden files.
+    func completions(for partialPath: String, showHidden: Bool = false) -> [URL] {
         let expanded = (partialPath as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
         let parentURL: URL
@@ -104,10 +105,11 @@ actor FileSystemService {
             prefix = url.lastPathComponent
         }
 
+        let options: FileManager.DirectoryEnumerationOptions = showHidden ? [] : [.skipsHiddenFiles]
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: parentURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: options
         ) else { return [] }
 
         return contents
@@ -125,6 +127,15 @@ actor FileSystemService {
 
     func exists(at url: URL) -> Bool {
         FileManager.default.fileExists(atPath: url.path)
+    }
+
+    func isReadable(at url: URL) -> Bool {
+        FileManager.default.isReadableFile(atPath: url.path)
+    }
+
+    /// Returns the display name for a volume URL, or nil if not a volume root.
+    func volumeName(for url: URL) -> String? {
+        try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName
     }
 
     /// Returns existence and directory status in a single syscall, eliminating ambiguity

@@ -22,10 +22,14 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .frame(minWidth: 180)
+        // Availability is checked asynchronously to avoid blocking the main thread with I/O.
+        .task {
+            await vm.refreshFavoriteAvailability()
+        }
     }
 
     private func sidebarRow(_ item: SidebarItem) -> some View {
-        let available = FileManager.default.fileExists(atPath: item.url.path)
+        let available = vm.isAvailable(item)
         return Button {
             guard available else { return }
             navigation.navigate(to: item.url)

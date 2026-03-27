@@ -21,7 +21,7 @@ final class AddressBarViewModel {
     }
 
     /// Called when text changes — schedules a debounced completion fetch.
-    func textDidChange(_ text: String, service: FileSystemService) {
+    func textDidChange(_ text: String, service: FileSystemService, showHidden: Bool) {
         editText = text
         completionTask?.cancel()
         guard !text.isEmpty else {
@@ -37,7 +37,7 @@ final class AddressBarViewModel {
                 return
             }
             guard !Task.isCancelled else { return }
-            let results = await service.completions(for: text)
+            let results = await service.completions(for: text, showHidden: showHidden)
             // Check again after the await — task may have been cancelled while fetching.
             guard !Task.isCancelled else { return }
             completions = results
@@ -55,12 +55,12 @@ final class AddressBarViewModel {
         // eliminating the ambiguity of isDirectory() returning false for non-existent paths.
         let status = await service.itemStatus(at: url)
         if status.isDirectory {
-            guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
+            guard await service.isReadable(at: url) else { return nil }
             return url
         }
         guard status.exists else { return nil }
         let parent = url.deletingLastPathComponent()
-        guard FileManager.default.isReadableFile(atPath: parent.path) else { return nil }
+        guard await service.isReadable(at: parent) else { return nil }
         return parent
     }
 }

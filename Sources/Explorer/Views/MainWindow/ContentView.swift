@@ -37,15 +37,30 @@ struct ContentView: View {
             browser.newFolder(in: navigation.currentURL)
             return .handled
         }
-        // Delete — move to trash
+        // Cmd+Delete — move to trash
         .onKeyPress(.delete, phases: .down) { event in
             guard event.modifiers.contains(.command) else { return .ignored }
             browser.trash(navigation: navigation)
             return .handled
         }
+        // Return — start rename on the single selected item
+        .onKeyPress(.return, phases: .down) { event in
+            guard event.modifiers.isEmpty else { return .ignored }
+            guard browser.renamingItem == nil,
+                  browser.selection.count == 1,
+                  let item = browser.selectedItems.first else { return .ignored }
+            browser.startRename(item)
+            return .handled
+        }
         // Status bar
         .safeAreaInset(edge: .bottom) {
             statusBar
+        }
+        // Rename requested from context menu (list or grid view)
+        .onReceive(NotificationCenter.default.publisher(for: .renameRequestedForURL)) { note in
+            guard let url = note.userInfo?["url"] as? URL,
+                  let item = browser.items.first(where: { $0.url == url }) else { return }
+            browser.startRename(item)
         }
         // Error alert
         .alert("Error", isPresented: Binding(

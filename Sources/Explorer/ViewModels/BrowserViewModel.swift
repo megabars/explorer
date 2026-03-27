@@ -36,11 +36,11 @@ final class BrowserViewModel {
         loadTask = Task {
             do {
                 let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
-                guard !Task.isCancelled else { return }
+                if Task.isCancelled { return }
                 items = loaded
                 selection = []
             } catch {
-                guard !Task.isCancelled else { return }
+                if Task.isCancelled { return }
                 errorMessage = error.localizedDescription
                 items = []
             }
@@ -66,6 +66,8 @@ final class BrowserViewModel {
     func stopWatching() {
         watcher.stop()
         loadTask?.cancel()
+        loadTask = nil
+        isLoading = false
     }
 
     // MARK: - Open
@@ -153,8 +155,8 @@ final class BrowserViewModel {
         guard !clipboardItems.isEmpty else { return }
         let isCut = clipboardIsCut
         let items = clipboardItems
-        // Clear cut clipboard synchronously before the Task to prevent a second paste
-        // from copying the same items if called rapidly.
+        // For cut, clear clipboard immediately to prevent a second paste of the same items.
+        // If the operation fails, we restore the clipboard below.
         if isCut {
             clipboardItems = []
             clipboardIsCut = false
@@ -169,9 +171,22 @@ final class BrowserViewModel {
             do {
                 try await fs.copy(items: existing, to: destination)
                 if isCut {
-                    try await TrashService.shared.trash(items: existing)
+                    do {
+                        try await TrashService.shared.trash(items: existing)
+                    } catch {
+                        // Copy succeeded but trash failed — files are now in both locations.
+                        // Restore clipboard as non-cut so the user can retry the delete manually.
+                        clipboardItems = existing
+                        clipboardIsCut = false
+                        errorMessage = "Files were copied but could not be removed from the original location: \(error.localizedDescription)"
+                    }
                 }
             } catch {
+                // Copy failed — restore the clipboard to its original cut state so user can retry.
+                if isCut {
+                    clipboardItems = items
+                    clipboardIsCut = true
+                }
                 errorMessage = error.localizedDescription
             }
         }
@@ -183,17 +198,26 @@ final class BrowserViewModel {
     }
 
     func commitRename(navigation: NavigationState) {
-        guard let item = renamingItem, !renameText.isEmpty, renameText != item.name else {
+        guard let item = renamingItem else {
             renamingItem = nil
             return
         }
-        // Clear renamingItem immediately before the async operation to avoid state race
+        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed != item.name else {
+            renamingItem = nil
+            return
+        }
+        // Validate: macOS filenames cannot contain '/' or NUL
+        guard !trimmed.contains("/"), !trimmed.contains("\0") else {
+            errorMessage = "The name cannot contain \"/\"."
+            renamingItem = nil
+            return
+        }
         let capturedItem = item
-        let capturedName = renameText
         renamingItem = nil
         Task {
             do {
-                _ = try await fs.rename(item: capturedItem, to: capturedName)
+                _ = try await fs.rename(item: capturedItem, to: trimmed)
             } catch {
                 errorMessage = error.localizedDescription
             }

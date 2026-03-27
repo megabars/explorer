@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct FileGridView: View {
     @Bindable var browser: BrowserViewModel
@@ -14,11 +15,38 @@ struct FileGridView: View {
                         item: item,
                         isSelected: browser.selection.contains(item.url)
                     )
+                    // Double-tap must be declared before single-tap so SwiftUI tries it first.
                     .onTapGesture(count: 2) {
                         browser.open(item, navigation: navigation)
                     }
                     .onTapGesture {
-                        browser.selection = [item.url]
+                        let flags = NSApp.currentEvent?.modifierFlags ?? []
+                        if flags.contains(.command) {
+                            // Cmd+Click: toggle the tapped item in the selection
+                            if browser.selection.contains(item.url) {
+                                browser.selection.remove(item.url)
+                            } else {
+                                browser.selection.insert(item.url)
+                            }
+                        } else {
+                            browser.selection = [item.url]
+                        }
+                    }
+                    .contextMenu {
+                        Button("Open") {
+                            browser.open(item, navigation: navigation)
+                        }
+                        Divider()
+                        Button("Rename") {
+                            browser.startRename(item)
+                        }
+                        Divider()
+                        Button("Move to Trash") {
+                            browser.trash(items: [item])
+                        }
+                        Button("Get Info") {
+                            NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                        }
                     }
                 }
             }

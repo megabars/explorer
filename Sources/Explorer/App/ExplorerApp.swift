@@ -17,18 +17,13 @@ struct ExplorerApp: App {
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             }
-
-            CommandGroup(after: .pasteboard) {
-                Divider()
-                Button("Select All") {
-                    // handled by NSTableView default behaviour
-                }
-                .keyboardShortcut("a", modifiers: .command)
-            }
+            // Note: "Select All" (Cmd+A) is intentionally not overridden here.
+            // NSTableView handles it natively via the AppKit responder chain.
         }
     }
 }
 
 extension Notification.Name {
     static let newFolderRequested = Notification.Name("newFolderRequested")
+    static let renameRequestedForURL = Notification.Name("renameRequestedForURL")
 }

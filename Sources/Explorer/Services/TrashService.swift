@@ -17,7 +17,8 @@ final class TrashService {
             for (item, url) in zip(items, urls) {
                 // Skip files that no longer exist — they may have been successfully
                 // moved by the batch call before it reported a partial failure.
-                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                // Use the FileSystemService actor to avoid blocking @MainActor.
+                guard await FileSystemService.shared.exists(at: url) else { continue }
                 do {
                     try await NSWorkspace.shared.recycle([url])
                 } catch let itemError {

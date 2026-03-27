@@ -7,6 +7,7 @@ struct AddressBarView: View {
     @Bindable var vm: AddressBarViewModel
     let navigation: NavigationState
     let fsService: FileSystemService
+    let showHidden: Bool
 
     var body: some View {
         ZStack {
@@ -63,7 +64,7 @@ struct AddressBarView: View {
                 vm.cancel()
             },
             onTextChange: { text in
-                vm.textDidChange(text, service: fsService)
+                vm.textDidChange(text, service: fsService, showHidden: showHidden)
             }
         )
         .padding(.horizontal, 8)
@@ -73,7 +74,7 @@ struct AddressBarView: View {
         ), arrowEdge: .bottom) {
             CompletionPopoverView(completions: vm.completions) { selected in
                 vm.editText = selected.path + "/"
-                vm.textDidChange(vm.editText, service: fsService)
+                vm.textDidChange(vm.editText, service: fsService, showHidden: showHidden)
             }
         }
     }

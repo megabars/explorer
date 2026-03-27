@@ -7,19 +7,12 @@ struct PathTokenView: View {
     let isLast: Bool
     let onTap: (URL) -> Void
 
-    private var name: String {
-        let components = url.pathComponents
-        if components.count <= 1 {
-            // Root — show volume name
-            let volumeName = (try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? url.lastPathComponent
-            return volumeName
-        }
-        return url.lastPathComponent
-    }
+    @State private var resolvedName: String = ""
+
+    private var isRoot: Bool { url.pathComponents.count <= 1 }
 
     private var icon: String {
-        let components = url.pathComponents
-        if components.count <= 1 { return "externaldrive" }
+        if isRoot { return "externaldrive" }
         let home = FileManager.default.homeDirectoryForCurrentUser
         if url == home { return "house" }
         return "folder"
@@ -35,7 +28,7 @@ struct PathTokenView: View {
                         .font(.system(size: 10))
                         .foregroundStyle(isLast ? .primary : .secondary)
 
-                    Text(name)
+                    Text(resolvedName.isEmpty ? url.lastPathComponent : resolvedName)
                         .font(.system(size: 12, weight: isLast ? .medium : .regular))
                         .foregroundStyle(isLast ? .primary : .secondary)
                         .lineLimit(1)
@@ -55,6 +48,17 @@ struct PathTokenView: View {
                     .font(.system(size: 13, weight: .light))
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 1)
+            }
+        }
+        // Resolve the display name asynchronously to avoid blocking the main thread with I/O.
+        // task(id: url) re-runs whenever the url changes.
+        .task(id: url) {
+            if isRoot {
+                // Volume name lookup is I/O — runs on the FileSystemService actor.
+                let name = await FileSystemService.shared.volumeName(for: url)
+                resolvedName = name ?? url.lastPathComponent
+            } else {
+                resolvedName = url.lastPathComponent
             }
         }
     }
