@@ -34,6 +34,7 @@ final class BrowserViewModel {
         errorMessage = nil
 
         loadTask = Task {
+            defer { isLoading = false }
             do {
                 let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
                 if Task.isCancelled { return }
@@ -44,7 +45,6 @@ final class BrowserViewModel {
                 errorMessage = error.localizedDescription
                 items = []
             }
-            isLoading = false
         }
 
         watcher.start(watching: url) { [weak self] in

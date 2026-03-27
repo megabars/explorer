@@ -25,7 +25,8 @@ final class SidebarViewModel {
             // Volumes from VolumeService are always mounted (they came from mountedVolumeURLs).
             return true
         }
-        // Optimistic default (true) until the first async check completes.
-        return favoriteAvailability[item.url] ?? true
+        // Pessimistic default (false) until the first async check completes —
+        // avoids briefly showing unavailable paths as clickable on cold start.
+        return favoriteAvailability[item.url] ?? false
     }
 }

@@ -7,12 +7,18 @@ final class DirectoryWatcher: @unchecked Sendable {
     /// Pending debounce work item — always accessed on the main queue.
     private var debounceItem: DispatchWorkItem?
     private static let debounceDelay: TimeInterval = 0.25
+    /// Incremented on each start() call. Stale main-queue dispatches from a previous
+    /// watcher cycle see a mismatched generation and discard themselves, preventing
+    /// them from cancelling the new cycle's debounce or triggering reloads for old URLs.
+    private var generation: Int = 0
 
     /// Starts watching `url` for filesystem changes.
     /// Returns `false` if the directory could not be opened (e.g. permission denied).
     @discardableResult
     func start(watching url: URL, onChange: @escaping @MainActor @Sendable () -> Void) -> Bool {
         stop()
+        generation &+= 1
+        let currentGen = generation
         // O_CLOEXEC prevents the fd from leaking into child processes
         let rawFD = open(url.path, O_EVTONLY | O_CLOEXEC)
         guard rawFD != -1 else { return false }
@@ -26,7 +32,8 @@ final class DirectoryWatcher: @unchecked Sendable {
         newSource.setEventHandler { [weak self] in
             // All debounceItem accesses happen on the main queue (serial), avoiding data races.
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                // Discard dispatches that survived a stop()/start() cycle.
+                guard let self, self.generation == currentGen else { return }
                 self.debounceItem?.cancel()
                 let item = DispatchWorkItem {
                     Task { @MainActor in onChange() }

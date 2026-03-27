@@ -147,6 +147,14 @@ struct FileListNSTableView: NSViewRepresentable {
             // Defer to next run-loop pass so the cell is fully laid out after any preceding reloadData.
             DispatchQueue.main.async { [weak self, weak tableView] in
                 guard let self, let tableView, self.isRenaming else { return }
+                // If the view was removed from the window between scheduling and execution,
+                // abandon the rename — making a windowless text field first-responder is a no-op
+                // and leaves the cell stuck in an editable-but-unfocused state.
+                guard tableView.window != nil else {
+                    self.isRenaming = false
+                    self.renamingRow = -1
+                    return
+                }
                 guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView,
                       let tf = cell.textField else { return }
                 self.editingTextField = tf

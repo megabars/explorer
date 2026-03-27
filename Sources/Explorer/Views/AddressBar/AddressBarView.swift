@@ -73,7 +73,9 @@ struct AddressBarView: View {
             set: { if !$0 { vm.completions = [] } }
         ), arrowEdge: .bottom) {
             CompletionPopoverView(completions: vm.completions) { selected in
-                vm.editText = selected.path + "/"
+                // selected.path may already end with "/" (e.g. root "/") — avoid "//".
+                let p = selected.path
+                vm.editText = p.hasSuffix("/") ? p : p + "/"
                 vm.textDidChange(vm.editText, service: fsService, showHidden: showHidden)
             }
         }
