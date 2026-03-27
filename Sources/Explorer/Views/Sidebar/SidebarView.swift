@@ -25,7 +25,9 @@ struct SidebarView: View {
     }
 
     private func sidebarRow(_ item: SidebarItem) -> some View {
-        Button {
+        let available = FileManager.default.fileExists(atPath: item.url.path)
+        return Button {
+            guard available else { return }
             navigation.navigate(to: item.url)
         } label: {
             Label(item.name, systemImage: item.systemImage)
@@ -33,6 +35,8 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .padding(.vertical, 1)
-        .foregroundStyle(navigation.currentURL == item.url ? .blue : .primary)
+        .foregroundStyle(navigation.currentURL == item.url ? .blue : (available ? .primary : .secondary))
+        .opacity(available ? 1.0 : 0.5)
+        .help(available ? "" : "\(item.name) is not available")
     }
 }

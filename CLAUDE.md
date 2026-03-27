@@ -25,7 +25,7 @@ Swift 6 strict concurrency (`swiftLanguageMode(.v6)`), macOS 14+, SPM executable
 - `FileSystemService` — `actor`, all `FileManager` calls isolated here
 - `BrowserViewModel`, `SidebarViewModel`, `AddressBarViewModel` — `@Observable @MainActor`
 - `NavigationState` — `@Observable @MainActor`, owns back/forward stack
-- `DirectoryWatcher` — `@unchecked Sendable` class wrapping `DispatchSource.makeFileSystemObjectSource`, delivers events via `Task { @MainActor in … }`
+- `DirectoryWatcher` — `@unchecked Sendable` class wrapping `DispatchSource.makeFileSystemObjectSource`, delivers events debounced (250 ms) via `DispatchWorkItem` on the main queue → `Task { @MainActor in … }`
 - `TrashService` / `VolumeService` — `@MainActor` singletons; `TrashService` delegates to `NSWorkspace.recycle`, `VolumeService` observes mount/unmount notifications
 
 ### Key data flow

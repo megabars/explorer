@@ -23,6 +23,8 @@ final class BrowserViewModel {
     private var loadTask: Task<Void, Never>?
     private let watcher = DirectoryWatcher()
     private let fs = FileSystemService.shared
+    /// Suppresses watcher-triggered reloads during explicit reloads (e.g. after newFolder).
+    private var suppressReload: Bool = false
 
     // MARK: - Loading
 
@@ -52,7 +54,7 @@ final class BrowserViewModel {
     }
 
     private func reload(url: URL) async {
-        guard !isLoading else { return }
+        guard !isLoading, !suppressReload else { return }
         do {
             let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
             items = loaded
@@ -95,17 +97,40 @@ final class BrowserViewModel {
 
     func newFolder(in url: URL) {
         Task {
+            // Suppress watcher-triggered reloads while we explicitly reload after creation.
+            // Set before any await so it takes effect synchronously on @MainActor.
+            suppressReload = true
+            defer { suppressReload = false }
             do {
-                let name = await fs.uniqueName(for: "New Folder", in: url)
-                let newURL = url.appendingPathComponent(name)
-                try await fs.createDirectory(at: newURL)
+                var name = "New Folder"
+                var counter = 2
+                var newURL: URL = url.appendingPathComponent(name)
+                // Atomic creation: attempt createDirectory; on name conflict retry with a counter.
+                // This avoids the TOCTOU race of pre-checking existence separately.
+                while true {
+                    newURL = url.appendingPathComponent(name)
+                    do {
+                        try await fs.createDirectory(at: newURL)
+                        break
+                    } catch let e as NSError
+                        where e.domain == NSCocoaErrorDomain && e.code == NSFileWriteFileExistsError {
+                        guard counter <= 100 else {
+                            throw NSError(
+                                domain: NSCocoaErrorDomain,
+                                code: NSFileWriteFileExistsError,
+                                userInfo: [NSLocalizedDescriptionKey: "Could not create a unique folder name."]
+                            )
+                        }
+                        name = "New Folder \(counter)"
+                        counter += 1
+                    }
+                }
                 // Reload explicitly so the new folder appears in items before we rename
                 let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
                 items = loaded
                 if let newItem = items.first(where: { $0.url == newURL }) {
                     startRename(newItem)
                 } else {
-                    // Item not found after reload — directory watcher may have missed the event
                     errorMessage = "New folder was created but could not be located for renaming."
                 }
             } catch {
@@ -128,6 +153,12 @@ final class BrowserViewModel {
         guard !clipboardItems.isEmpty else { return }
         let isCut = clipboardIsCut
         let items = clipboardItems
+        // Clear cut clipboard synchronously before the Task to prevent a second paste
+        // from copying the same items if called rapidly.
+        if isCut {
+            clipboardItems = []
+            clipboardIsCut = false
+        }
         Task {
             // Filter to items that still exist — clipboard may be stale
             var existing: [FileItem] = []
@@ -139,9 +170,6 @@ final class BrowserViewModel {
                 try await fs.copy(items: existing, to: destination)
                 if isCut {
                     try await TrashService.shared.trash(items: existing)
-                    // Clear clipboard after a successful cut+paste (fix 20)
-                    clipboardItems = []
-                    clipboardIsCut = false
                 }
             } catch {
                 errorMessage = error.localizedDescription

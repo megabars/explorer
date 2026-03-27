@@ -66,29 +66,28 @@ actor FileSystemService {
             let ext = (item.name as NSString).pathExtension
             var candidate = destination.appendingPathComponent(item.name)
             var counter = 2
-            // Retry with incremented counter on conflict (avoids TOCTOU from pre-checking existence)
+            // Retry with incremented counter on conflict (avoids TOCTOU from pre-checking existence).
+            // Guard against degenerate cases with a maximum iteration limit.
             while true {
                 do {
                     try FileManager.default.copyItem(at: item.url, to: candidate)
                     break
-                } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                } catch let error as NSError
+                    where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                    guard counter <= 1000 else {
+                        throw NSError(
+                            domain: NSCocoaErrorDomain,
+                            code: NSFileWriteFileExistsError,
+                            userInfo: [NSLocalizedDescriptionKey:
+                                "Could not copy \"\(item.name)\": too many conflicting files in destination."]
+                        )
+                    }
                     let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
                     candidate = destination.appendingPathComponent(newName)
                     counter += 1
                 }
             }
         }
-    }
-
-    /// Returns a unique folder/file name inside `url` by appending a counter if needed.
-    func uniqueName(for base: String, in url: URL) -> String {
-        var name = base
-        var counter = 2
-        while FileManager.default.fileExists(atPath: url.appendingPathComponent(name).path) {
-            name = "\(base) \(counter)"
-            counter += 1
-        }
-        return name
     }
 
     func completions(for partialPath: String) -> [URL] {
@@ -128,9 +127,11 @@ actor FileSystemService {
         FileManager.default.fileExists(atPath: url.path)
     }
 
-    func isDirectory(at url: URL) -> Bool {
+    /// Returns existence and directory status in a single syscall, eliminating ambiguity
+    /// between "does not exist" and "exists but is not a directory".
+    func itemStatus(at url: URL) -> (exists: Bool, isDirectory: Bool) {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
-        return exists && isDir.boolValue
+        return (exists, exists && isDir.boolValue)
     }
 }

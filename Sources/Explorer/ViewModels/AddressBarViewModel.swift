@@ -29,9 +29,17 @@ final class AddressBarViewModel {
             return
         }
         completionTask = Task {
-            try? await Task.sleep(nanoseconds: 150_000_000) // 150ms debounce
+            // Use do/catch instead of try? so that cancellation (CancellationError)
+            // exits the task immediately rather than continuing after sleep.
+            do {
+                try await Task.sleep(nanoseconds: 150_000_000) // 150ms debounce
+            } catch {
+                return
+            }
             guard !Task.isCancelled else { return }
             let results = await service.completions(for: text)
+            // Check again after the await — task may have been cancelled while fetching.
+            guard !Task.isCancelled else { return }
             completions = results
         }
     }
@@ -43,13 +51,14 @@ final class AddressBarViewModel {
         // Always close editing regardless of whether path is valid
         isEditing = false
         completions = []
-        // Single isDirectory call covers both existence and type in one syscall
-        let isDir = await service.isDirectory(at: url)
-        if isDir {
+        // Single itemStatus call covers both existence and type in one syscall,
+        // eliminating the ambiguity of isDirectory() returning false for non-existent paths.
+        let status = await service.itemStatus(at: url)
+        if status.isDirectory {
             guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
             return url
         }
-        guard await service.exists(at: url) else { return nil }
+        guard status.exists else { return nil }
         let parent = url.deletingLastPathComponent()
         guard FileManager.default.isReadableFile(atPath: parent.path) else { return nil }
         return parent

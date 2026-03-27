@@ -34,7 +34,10 @@ struct FocusedTextField: NSViewRepresentable {
         guard !context.coordinator.didBecomeFirstResponder else { return }
         context.coordinator.didBecomeFirstResponder = true
         DispatchQueue.main.async {
-            nsView.window?.makeFirstResponder(nsView)
+            // Guard against the view being removed from the hierarchy before the
+            // async block executes (e.g. address bar dismissed very quickly).
+            guard nsView.superview != nil, let window = nsView.window else { return }
+            window.makeFirstResponder(nsView)
         }
     }
 
@@ -62,6 +65,8 @@ struct FocusedTextField: NSViewRepresentable {
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {
+            // Reset so that makeFirstResponder fires again the next time the address bar opens.
+            didBecomeFirstResponder = false
             parent.onCancel()
         }
 

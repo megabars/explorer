@@ -76,6 +76,11 @@ struct FileListNSTableView: NSViewRepresentable {
         let newIDs = items.map(\.id)
         if newIDs != context.coordinator.lastItemIDs {
             context.coordinator.lastItemIDs = newIDs
+            // If the item being renamed was removed from the directory (e.g. deleted
+            // by another process), cancel the rename to prevent stale state.
+            if let renaming = renamingItem, !items.contains(where: { $0.id == renaming.id }) {
+                onCancelRename()
+            }
             let scrollOffset = nsView.documentVisibleRect.origin
             tableView.reloadData()
             nsView.documentView?.scroll(scrollOffset)

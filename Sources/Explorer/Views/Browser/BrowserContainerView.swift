@@ -27,11 +27,8 @@ struct BrowserContainerView: View {
         .onDisappear {
             browser.stopWatching()
         }
-        // Keyboard shortcuts
-        .onKeyPress(.delete, action: {
-            browser.trash(navigation: navigation)
-            return .handled
-        })
+        // Delete key is handled at ContentView level (Cmd+Delete → trash) to avoid
+        // duplicate firing when both this view and ContentView receive the event.
     }
 
     @ViewBuilder

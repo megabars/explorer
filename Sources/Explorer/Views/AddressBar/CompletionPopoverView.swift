@@ -6,7 +6,7 @@ struct CompletionPopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(completions.enumerated()), id: \.offset) { index, url in
+            ForEach(Array(completions.enumerated()), id: \.element) { index, url in
                 Button {
                     onSelect(url)
                 } label: {
