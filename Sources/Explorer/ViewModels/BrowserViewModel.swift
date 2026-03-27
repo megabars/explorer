@@ -79,11 +79,14 @@ final class BrowserViewModel {
     // MARK: - File Operations
 
     func trash(navigation: NavigationState) {
-        let toTrash = selectedItems
-        guard !toTrash.isEmpty else { return }
+        trash(items: selectedItems)
+    }
+
+    func trash(items: [FileItem]) {
+        guard !items.isEmpty else { return }
         Task {
             do {
-                try await TrashService.shared.trash(items: toTrash)
+                try await TrashService.shared.trash(items: items)
             } catch {
                 errorMessage = error.localizedDescription
             }

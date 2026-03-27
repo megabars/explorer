@@ -10,17 +10,6 @@ struct AddressBarView: View {
 
     var body: some View {
         ZStack {
-            // Background always visible
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(
-                            Color(nsColor: vm.isEditing ? .keyboardFocusIndicatorColor : .separatorColor),
-                            lineWidth: vm.isEditing ? 2 : 0.5
-                        )
-                )
-
             if vm.isEditing {
                 editingView
             } else {

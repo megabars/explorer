@@ -40,11 +40,13 @@ final class AddressBarViewModel {
     func commit(service: FileSystemService) async -> URL? {
         let expanded = (editText as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
-        let isDir = await service.isDirectory(at: url)
-        let exists = await service.exists(at: url)
-        guard exists else { return nil }
+        // Always close editing regardless of whether path is valid
         isEditing = false
         completions = []
-        return isDir ? url : url.deletingLastPathComponent()
+        // Single isDirectory call covers both existence and type in one syscall
+        let isDir = await service.isDirectory(at: url)
+        if isDir { return url }
+        guard await service.exists(at: url) else { return nil }
+        return url.deletingLastPathComponent()
     }
 }

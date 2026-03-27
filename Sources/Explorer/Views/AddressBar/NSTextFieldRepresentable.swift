@@ -16,9 +16,10 @@ struct FocusedTextField: NSViewRepresentable {
         let field = NSTextField()
         field.placeholderString = placeholder
         field.delegate = context.coordinator
-        field.bezelStyle = .roundedBezel
-        field.isBordered = true
-        field.backgroundColor = .textBackgroundColor
+        field.isBordered = false
+        field.isBezeled = false
+        field.backgroundColor = .clear
+        field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: NSFont.systemFontSize)
         context.coordinator.field = field
@@ -29,11 +30,11 @@ struct FocusedTextField: NSViewRepresentable {
         if nsView.stringValue != text {
             nsView.stringValue = text
         }
-        // Become first responder on next run-loop tick
+        // Become first responder only once when the view first appears
+        guard !context.coordinator.didBecomeFirstResponder else { return }
+        context.coordinator.didBecomeFirstResponder = true
         DispatchQueue.main.async {
-            if let window = nsView.window, window.firstResponder != nsView.currentEditor() {
-                window.makeFirstResponder(nsView)
-            }
+            nsView.window?.makeFirstResponder(nsView)
         }
     }
 
@@ -41,6 +42,7 @@ struct FocusedTextField: NSViewRepresentable {
     class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: FocusedTextField
         weak var field: NSTextField?
+        var didBecomeFirstResponder = false
 
         init(_ parent: FocusedTextField) {
             self.parent = parent
@@ -51,6 +53,10 @@ struct FocusedTextField: NSViewRepresentable {
             let value = field.stringValue
             parent.text = value
             parent.onTextChange(value)
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            parent.onCancel()
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {

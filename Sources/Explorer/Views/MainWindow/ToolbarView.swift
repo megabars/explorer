@@ -41,7 +41,7 @@ struct ExplorerToolbar: ToolbarContent {
                 navigation: navigation,
                 fsService: fsService
             )
-            .frame(minWidth: 300, maxWidth: .infinity)
+            .frame(minWidth: 500, maxWidth: .infinity)
         }
 
         // View mode picker + New Folder on the right

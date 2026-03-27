@@ -14,11 +14,11 @@ struct FileGridView: View {
                         item: item,
                         isSelected: browser.selection.contains(item.url)
                     )
-                    .onTapGesture {
-                        browser.selection = [item.url]
-                    }
                     .onTapGesture(count: 2) {
                         browser.open(item, navigation: navigation)
+                    }
+                    .onTapGesture {
+                        browser.selection = [item.url]
                     }
                 }
             }

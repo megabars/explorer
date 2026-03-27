@@ -22,7 +22,9 @@ struct FileListView: View {
             onCancelRename: {
                 browser.cancelRename()
             },
-            onContextMenu: { _, _ in }
+            onTrash: { item in
+                browser.trash(items: [item])
+            }
         )
     }
 }

@@ -9,7 +9,7 @@ struct FileListNSTableView: NSViewRepresentable {
     let onOpen: (FileItem) -> Void
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
-    let onContextMenu: (FileItem, NSPoint) -> Void
+    let onTrash: (FileItem) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -72,7 +72,14 @@ struct FileListNSTableView: NSViewRepresentable {
         context.coordinator.parent = self
         guard let tableView = nsView.documentView as? NSTableView else { return }
 
-        tableView.reloadData()
+        // Reload only when item list actually changed — preserves scroll position
+        let newIDs = items.map(\.id)
+        if newIDs != context.coordinator.lastItemIDs {
+            context.coordinator.lastItemIDs = newIDs
+            let scrollOffset = nsView.documentVisibleRect.origin
+            tableView.reloadData()
+            nsView.documentView?.scroll(scrollOffset)
+        }
 
         // Sync selection from SwiftUI → NSTableView
         var indexes = IndexSet()
@@ -90,6 +97,7 @@ struct FileListNSTableView: NSViewRepresentable {
     class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
         var parent: FileListNSTableView
         weak var tableView: NSTableView?
+        var lastItemIDs: [URL] = []
 
         private let dateFormatter: DateFormatter = {
             let f = DateFormatter()
@@ -232,7 +240,9 @@ struct FileListNSTableView: NSViewRepresentable {
         }
 
         @objc func menuTrash(_ sender: NSMenuItem) {
-            // Notify via selection — BrowserViewModel handles it
+            guard let url = sender.representedObject as? URL,
+                  let item = parent.items.first(where: { $0.url == url }) else { return }
+            parent.onTrash(item)
         }
 
         @objc func menuGetInfo(_ sender: NSMenuItem) {

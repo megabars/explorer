@@ -26,14 +26,25 @@ Swift 6 strict concurrency (`swiftLanguageMode(.v6)`), macOS 14+, SPM executable
 - `BrowserViewModel`, `SidebarViewModel`, `AddressBarViewModel` — `@Observable @MainActor`
 - `NavigationState` — `@Observable @MainActor`, owns back/forward stack
 - `DirectoryWatcher` — `@unchecked Sendable` class wrapping `DispatchSource.makeFileSystemObjectSource`, delivers events via `Task { @MainActor in … }`
+- `TrashService` / `VolumeService` — `@MainActor` singletons; `TrashService` delegates to `NSWorkspace.recycle`, `VolumeService` observes mount/unmount notifications
 
 ### Key data flow
 `NavigationState.currentURL` is the single source of truth for the current path. `BrowserContainerView` observes it via `.onChange(of: navigation.currentURL)` and calls `BrowserViewModel.load(url:)` which reads the directory via `FileSystemService` and starts a `DirectoryWatcher`.
 
+All view-model instances are created in `ContentView` as `@State` and passed down by reference — there is no environment injection.
+
+### Cross-component communication
+`Notification.Name.newFolderRequested` (posted via `NotificationCenter.default`) bridges SwiftUI menu commands to `BrowserViewModel.newFolder(in:)`.
+
+### Sidebar
+`SidebarViewModel` holds a static `favorites` list (`SidebarItem.defaults`) and delegates to `VolumeService.shared` for mounted volumes. Both sections are rendered by `SidebarView`.
+
 ### Address bar
 Two states controlled by `AddressBarViewModel.isEditing`:
 - **Idle** — `PathTokenView` breadcrumbs built from `URL.pathComponentURLs` (uses `url.pathComponents` string array — never call `deletingLastPathComponent()` in a loop, it caused a 30 GB memory hang)
-- **Editing** — `FocusedTextField` (`NSTextField` via `NSViewRepresentable`) activated on click or `Cmd+L`
+- **Editing** — `FocusedTextField` (`NSTextField` via `NSViewRepresentable`) activated on click or `Cmd+L`; exits on Enter, Escape, or focus loss (`controlTextDidEndEditing`)
+
+`AddressBarView` has no custom background — the system toolbar capsule (macOS 14+) provides the visual container. `FocusedTextField` is borderless/transparent so it blends into that capsule.
 
 ### AppKit bridges
 - `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view

@@ -6,7 +6,7 @@ struct CompletionPopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(completions, id: \.self) { url in
+            ForEach(Array(completions.enumerated()), id: \.offset) { index, url in
                 Button {
                     onSelect(url)
                 } label: {
@@ -26,7 +26,7 @@ struct CompletionPopoverView: View {
                 .buttonStyle(.plain)
                 .background(Color.clear)
 
-                if url != completions.last {
+                if index < completions.count - 1 {
                     Divider().padding(.horizontal, 8)
                 }
             }
