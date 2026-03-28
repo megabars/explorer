@@ -11,6 +11,9 @@ final class BrowserViewModel {
     var isLoading: Bool = false
     var errorMessage: String?
     var showHidden: Bool = false
+    var showTagsColumn: Bool = UserDefaults.standard.object(forKey: "showTagsColumn") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showTagsColumn, forKey: "showTagsColumn") }
+    }
 
     // Clipboard state
     var clipboardItems: [FileItem] = []
@@ -47,16 +50,17 @@ final class BrowserViewModel {
         errorMessage = nil
 
         loadTask = Task {
-            defer { isLoading = false }
             do {
                 let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
                 if Task.isCancelled { return }
                 items = loaded
                 selection = []
+                isLoading = false
             } catch {
                 if Task.isCancelled { return }
                 errorMessage = error.localizedDescription
                 items = []
+                isLoading = false
             }
         }
 
@@ -257,6 +261,18 @@ final class BrowserViewModel {
         Task {
             do {
                 try await fs.setTags(tags, for: item.url)
+                // Tag changes write xattrs on the file, not the directory, so the watcher
+                // never fires. Update the item in-place so dots appear immediately.
+                if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                    let old = items[idx]
+                    items[idx] = FileItem(
+                        id: old.id, url: old.url, name: old.name,
+                        isDirectory: old.isDirectory, isPackage: old.isPackage,
+                        isHidden: old.isHidden, isSymlink: old.isSymlink,
+                        fileSize: old.fileSize, contentModificationDate: old.contentModificationDate,
+                        creationDate: old.creationDate, kind: old.kind, tags: tags
+                    )
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }

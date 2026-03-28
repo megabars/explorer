@@ -25,6 +25,9 @@ struct FileListNSTableView: NSViewRepresentable {
     var onAddToSidebar: ((URL) -> Void)?
     // Drag & Drop
     let onMove: ([URL], URL) -> Void
+    // Tags column
+    var tagsColumnVisible: Bool
+    let onTagsColumnVisibilityChanged: (Bool) -> Void
     // Sorting
     var sortKey: BrowserViewModel.SortKey
     var sortAscending: Bool
@@ -45,6 +48,12 @@ struct FileListNSTableView: NSViewRepresentable {
 
         tableView.rowHeight = 22
         tableView.intercellSpacing = NSSize(width: 3, height: 2)
+
+        let tagsCol = NSTableColumn(identifier: .init("tags"))
+        tagsCol.title = "Tags"
+        tagsCol.width = 16
+        tagsCol.minWidth = 12
+        tagsCol.maxWidth = 22
 
         let nameCol = NSTableColumn(identifier: .init("name"))
         nameCol.title = "Name"
@@ -72,7 +81,7 @@ struct FileListNSTableView: NSViewRepresentable {
         kindCol.minWidth = 60
         kindCol.sortDescriptorPrototype = NSSortDescriptor(key: "kind", ascending: true)
 
-        for col in [nameCol, dateCol, sizeCol, kindCol] { tableView.addTableColumn(col) }
+        for col in [tagsCol, nameCol, dateCol, sizeCol, kindCol] { tableView.addTableColumn(col) }
 
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
@@ -100,6 +109,12 @@ struct FileListNSTableView: NSViewRepresentable {
         context.coordinator.parent = self
         guard let tableView = nsView.documentView as? NSTableView else { return }
 
+        // Sync tags column visibility
+        if let col = tableView.tableColumn(withIdentifier: .init("tags")),
+           col.isHidden != !tagsColumnVisible {
+            col.isHidden = !tagsColumnVisible
+        }
+
         // Sync sort indicator arrow in column headers
         let keyMap: [BrowserViewModel.SortKey: String] = [.name: "name", .dateModified: "dateModified", .size: "size", .kind: "kind"]
         for col in tableView.tableColumns {
@@ -115,16 +130,18 @@ struct FileListNSTableView: NSViewRepresentable {
         }
 
 
-        // Reload only when item list actually changed — preserves scroll position.
+        // Reload when item list or tag content changed — preserves scroll position.
         // Skip reloadData while rename is in progress to avoid destroying the editing cell.
         let newIDs = items.map(\.id)
-        if newIDs != context.coordinator.lastItemIDs {
+        let newTagsHash = items.reduce(into: 0) { $0 ^= $1.url.hashValue &+ $1.tags.joined().hashValue }
+        if newIDs != context.coordinator.lastItemIDs || newTagsHash != context.coordinator.lastTagsHash {
             // If the item being renamed disappeared, cancel rename first.
             if let renaming = renamingItem, !items.contains(where: { $0.id == renaming.id }) {
                 context.coordinator.cancelEditing()
                 onCancelRename()
             }
             context.coordinator.lastItemIDs = newIDs
+            context.coordinator.lastTagsHash = newTagsHash
             // Don't reload while rename is active — it would destroy the editing text field.
             if !context.coordinator.isRenaming {
                 let scrollOffset = nsView.documentVisibleRect.origin
@@ -162,6 +179,7 @@ struct FileListNSTableView: NSViewRepresentable {
         var parent: FileListNSTableView
         weak var tableView: NSTableView?
         var lastItemIDs: [URL] = []
+        var lastTagsHash: Int = 0
 
         // MARK: Rename state
         var isRenaming = false
@@ -296,6 +314,8 @@ struct FileListNSTableView: NSViewRepresentable {
             let colID = tableColumn?.identifier.rawValue ?? ""
 
             switch colID {
+            case "tags":
+                return tagsCell(for: item, in: tableView)
             case "name":
                 return nameCell(for: item, in: tableView)
             case "date":
@@ -308,6 +328,59 @@ struct FileListNSTableView: NSViewRepresentable {
                 return labelCell(id: "kindCell", text: item.kind, alignment: .left, in: tableView)
             default:
                 return nil
+            }
+        }
+
+        private func tagsCell(for item: FileItem, in tableView: NSTableView) -> NSView {
+            let id = NSUserInterfaceItemIdentifier("tagsCell")
+            let cell: NSTableCellView = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? {
+                let c = NSTableCellView()
+                c.identifier = id
+                let stack = NSStackView()
+                stack.identifier = NSUserInterfaceItemIdentifier("tagDotsStack")
+                stack.orientation = .horizontal
+                stack.spacing = 3
+                stack.translatesAutoresizingMaskIntoConstraints = false
+                c.addSubview(stack)
+                NSLayoutConstraint.activate([
+                    stack.centerXAnchor.constraint(equalTo: c.centerXAnchor),
+                    stack.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                ])
+                return c
+            }()
+
+            if let stack = cell.subviews.first(where: { $0.identifier?.rawValue == "tagDotsStack" }) as? NSStackView {
+                stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+                for tag in item.tags.prefix(5) {
+                    let dot = NSView()
+                    dot.wantsLayer = true
+                    dot.layer?.backgroundColor = tagNSColor(tag).cgColor
+                    dot.layer?.cornerRadius = 4
+                    dot.translatesAutoresizingMaskIntoConstraints = false
+                    NSLayoutConstraint.activate([
+                        dot.widthAnchor.constraint(equalToConstant: 8),
+                        dot.heightAnchor.constraint(equalToConstant: 8),
+                    ])
+                    stack.addArrangedSubview(dot)
+                }
+            }
+            return cell
+        }
+
+        // MARK: Column visibility (macOS 13+)
+        // nonisolated + assumeIsolated because AppKit always calls these on the main thread
+        // but the new SDK annotations don't carry @preconcurrency like older delegate methods do.
+
+        nonisolated func tableView(_ tableView: NSTableView, userCanChangeVisibilityOf column: NSTableColumn) -> Bool {
+            MainActor.assumeIsolated {
+                column.identifier.rawValue == "tags"
+            }
+        }
+
+        nonisolated func tableView(_ tableView: NSTableView, userDidChangeVisibilityOf columns: [NSTableColumn]) {
+            MainActor.assumeIsolated {
+                guard let tagsCol = columns.first(where: { $0.identifier.rawValue == "tags" }) else { return }
+                parent.onTagsColumnVisibilityChanged(!tagsCol.isHidden)
             }
         }
 
@@ -337,24 +410,13 @@ struct FileListNSTableView: NSViewRepresentable {
                 c.textField = tf
                 c.addSubview(tf)
 
-                // Color-tag dots container (identifier "tagDots" for reuse lookup)
-                let dots = NSStackView()
-                dots.translatesAutoresizingMaskIntoConstraints = false
-                dots.orientation = .horizontal
-                dots.spacing = 3
-                dots.identifier = NSUserInterfaceItemIdentifier("tagDots")
-                c.addSubview(dots)
-
                 NSLayoutConstraint.activate([
                     img.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 2),
                     img.centerYAnchor.constraint(equalTo: c.centerYAnchor),
                     img.widthAnchor.constraint(equalToConstant: 16),
                     img.heightAnchor.constraint(equalToConstant: 16),
-                    dots.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -4),
-                    dots.centerYAnchor.constraint(equalTo: c.centerYAnchor),
-                    dots.widthAnchor.constraint(greaterThanOrEqualToConstant: 0),
                     tf.leadingAnchor.constraint(equalTo: img.trailingAnchor, constant: 5),
-                    tf.trailingAnchor.constraint(equalTo: dots.leadingAnchor, constant: -4),
+                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -4),
                     tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
                 ])
                 return c
@@ -366,23 +428,6 @@ struct FileListNSTableView: NSViewRepresentable {
             // overwriting it would clobber whatever the user has typed so far.
             if !(isRenaming && renamingRow == tableView.row(for: cell)) {
                 cell.textField?.stringValue = item.name
-            }
-
-            // Update tag dots
-            if let dots = cell.subviews.first(where: { $0.identifier?.rawValue == "tagDots" }) as? NSStackView {
-                dots.arrangedSubviews.forEach { $0.removeFromSuperview() }
-                for tag in item.tags.prefix(5) {
-                    let dot = NSView()
-                    dot.wantsLayer = true
-                    dot.layer?.backgroundColor = tagNSColor(tag).cgColor
-                    dot.layer?.cornerRadius = 4
-                    dot.translatesAutoresizingMaskIntoConstraints = false
-                    NSLayoutConstraint.activate([
-                        dot.widthAnchor.constraint(equalToConstant: 8),
-                        dot.heightAnchor.constraint(equalToConstant: 8),
-                    ])
-                    dots.addArrangedSubview(dot)
-                }
             }
 
             return cell

@@ -43,6 +43,8 @@ struct FileListView: View {
                     }
                 }
             },
+            tagsColumnVisible: browser.showTagsColumn,
+            onTagsColumnVisibilityChanged: { browser.showTagsColumn = $0 },
             sortKey: browser.sortKey,
             sortAscending: browser.sortAscending,
             onSortChange: { key, ascending in

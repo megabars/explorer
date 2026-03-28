@@ -182,24 +182,27 @@ actor FileSystemService {
             let ext = (name as NSString).pathExtension
             var candidate = destination.appendingPathComponent(name)
             var counter = 2
+            // Retry on conflict (same pattern as copy()) to avoid TOCTOU from pre-checking existence.
             while true {
-                if !FileManager.default.fileExists(atPath: candidate.path) {
+                do {
                     try FileManager.default.moveItem(at: source, to: candidate)
                     break
-                }
-                let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
-                candidate = destination.appendingPathComponent(newName)
-                counter += 1
-                guard counter <= 1000 else {
-                    throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteFileExistsError,
-                                  userInfo: [NSLocalizedDescriptionKey: "Could not move \"\(name)\": too many conflicts."])
+                } catch let error as NSError
+                    where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                    guard counter <= 1000 else {
+                        throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteFileExistsError,
+                                      userInfo: [NSLocalizedDescriptionKey: "Could not move \"\(name)\": too many conflicts."])
+                    }
+                    let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+                    candidate = destination.appendingPathComponent(newName)
+                    counter += 1
                 }
             }
         }
     }
 
     /// Compresses the given items into an Archive.zip (or Archive N.zip) in the given directory.
-    func compress(_ items: [FileItem], in directory: URL) throws {
+    func compress(_ items: [FileItem], in directory: URL) async throws {
         var archiveName = "Archive"
         var archiveURL = directory.appendingPathComponent("\(archiveName).zip")
         var counter = 2
@@ -216,16 +219,32 @@ actor FileSystemService {
         args += items.map { $0.url.lastPathComponent }
         process.arguments = args
 
-        let pipe = Pipe()
-        process.standardError = pipe
-        try process.run()
-        process.waitUntilExit()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
 
-        if process.terminationStatus != 0 {
-            let errData = pipe.fileHandleForReading.readDataToEndOfFile()
-            let msg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
-            throw NSError(domain: "zip", code: Int(process.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: msg])
+        // Use a continuation so the actor is not blocked while zip runs.
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { p in
+                if p.terminationStatus == 0 {
+                    continuation.resume()
+                } else {
+                    let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    let msg = String(data: errData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
+                    continuation.resume(throwing: NSError(
+                        domain: "zip",
+                        code: Int(p.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey: msg]
+                    ))
+                }
+            }
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
+            }
         }
     }
 }

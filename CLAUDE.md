@@ -66,10 +66,20 @@ Two states controlled by `AddressBarViewModel.isEditing`:
 `AddressBarView` has no custom background — the system toolbar capsule provides the visual container. The toolbar item uses `minWidth: 120` (not 500) so NSToolbar never pushes it to the `>>` overflow menu when paths are long.
 
 ### Clipboard
-`BrowserViewModel` manages cut/copy/paste via `NSPasteboard`. Cut items are tracked in `cutItems: Set<URL>`; pasting resolves conflicts (duplicate filenames get a numeric suffix). All clipboard commands flow through `NotificationCenter` (see Cross-component communication).
+`BrowserViewModel` manages cut/copy/paste entirely in-memory — no `NSPasteboard` is used. State: `clipboardItems: [FileItem]` + `clipboardIsCut: Bool`. Cut clears the clipboard immediately on paste attempt; if the operation fails, the clipboard is restored. Pasting resolves name conflicts with a numeric suffix (retry-on-conflict pattern, same as `copy`). All clipboard commands flow through `NotificationCenter` (see Cross-component communication).
+
+### Tags and compress
+Tags are macOS Finder color tags stored via `NSURLTagNamesKey`. `FileSystemService.setTags(_:for:)` writes them; `listDirectory` reads them into `FileItem.tags`. After `setTags` succeeds, `BrowserViewModel` updates the item in `items` directly — the `DirectoryWatcher` does not fire for xattr changes. List view shows tags in a dedicated narrow leftmost column ("Tags", 16px); icon view shows dots below the filename. The Tags column can be toggled via right-click on any column header (macOS 13+ native API `tableView(_:userCanChangeVisibilityOf:)`); visibility is persisted to `UserDefaults` under key `"showTagsColumn"` via `BrowserViewModel.showTagsColumn`.
+
+`BrowserViewModel.compress()` delegates to `FileSystemService.compress(_:in:)` which shells out to `/usr/bin/zip` via `Process` using `withCheckedThrowingContinuation` + `terminationHandler` (non-blocking — actor is free while zip runs); the archive is named `Archive.zip` (incrementing to `Archive 2.zip` etc. on conflict).
+
+### Packages and `suppressReload`
+`BrowserViewModel.open(_:navigation:)` checks `item.isPackage` — packages (`.app` bundles, etc.) are opened with `NSWorkspace.shared.open` rather than navigated into, same as regular files.
+
+`suppressReload: Bool` on `BrowserViewModel` prevents the `DirectoryWatcher` callback from triggering a redundant reload while `newFolder(in:)` is performing an explicit reload after directory creation. It is set synchronously on `@MainActor` before any `await` so the watcher callback (which also runs on `@MainActor`) cannot fire between the set and the reload.
 
 ### AppKit bridges
-- `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view; coordinator conforms to `NSTextFieldDelegate` for inline rename, `NSMenuDelegate` for context menu, and `NSTableViewDataSource/Delegate` for drag & drop
+- `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view; coordinator conforms to `NSTextFieldDelegate` for inline rename, `NSMenuDelegate` for context menu, `NSTableViewDataSource/Delegate` for drag & drop, and `NSTableViewDelegate` column-visibility methods (`userCanChangeVisibilityOf`/`userDidChangeVisibilityOf`) marked `nonisolated` with `MainActor.assumeIsolated` (AppKit always calls them on main thread but newer SDK drops `@preconcurrency`)
 - `FocusedTextField` — `NSViewRepresentable` returning `TextFieldContainer` (NSView subclass that centers an NSTextField via `layout()`) for address bar editing
 - Right-click on empty space in list view shows "New Folder" + "Paste" via `menuNeedsUpdate` when `clickedRow < 0`; icon view shows the same via SwiftUI `.contextMenu` on the `ScrollView`
 
