@@ -38,6 +38,13 @@ struct ExplorerApp: App {
                 }
                 .keyboardShortcut("d", modifiers: .command)
             }
+            // Undo
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") {
+                    NotificationCenter.default.post(name: .undoRequested, object: nil)
+                }
+                .keyboardShortcut("z", modifiers: .command)
+            }
             // Override Find to open our filter bar instead of the system Find panel.
             CommandGroup(replacing: .textEditing) {
                 Button("Filter") {
@@ -59,4 +66,5 @@ extension Notification.Name {
     static let pasteRequested = Notification.Name("pasteRequested")
     static let duplicateRequested = Notification.Name("duplicateRequested")
     static let filterRequested = Notification.Name("filterRequested")
+    static let undoRequested = Notification.Name("undoRequested")
 }

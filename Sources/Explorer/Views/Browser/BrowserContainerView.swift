@@ -10,7 +10,7 @@ struct BrowserContainerView: View {
             if browser.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = browser.errorMessage {
+            } else if let error = browser.loadError {
                 errorView(message: error)
             } else if browser.sortedItems.isEmpty {
                 emptyView
@@ -64,7 +64,7 @@ struct BrowserContainerView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button("Retry") {
-                browser.errorMessage = nil
+                browser.loadError = nil
                 browser.load(url: navigation.currentURL)
             }
             .buttonStyle(.bordered)

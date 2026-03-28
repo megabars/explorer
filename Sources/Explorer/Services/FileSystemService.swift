@@ -202,21 +202,20 @@ actor FileSystemService {
     }
 
     /// Compresses the given items into an Archive.zip (or Archive N.zip) in the given directory.
+    /// Uses a unique temporary name during compression, then renames to the target name
+    /// (with conflict resolution) to avoid TOCTOU races.
     func compress(_ items: [FileItem], in directory: URL) async throws {
-        var archiveName = "Archive"
-        var archiveURL = directory.appendingPathComponent("\(archiveName).zip")
-        var counter = 2
-        while FileManager.default.fileExists(atPath: archiveURL.path) {
-            archiveName = "Archive \(counter)"
-            archiveURL = directory.appendingPathComponent("\(archiveName).zip")
-            counter += 1
-        }
+        let itemNames = items.map { $0.url.lastPathComponent }
+
+        // Create a unique temporary file name that cannot conflict
+        let tempName = "Archive-\(UUID().uuidString).zip"
+        let tempURL = directory.appendingPathComponent(tempName)
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         process.currentDirectoryURL = directory
-        var args = ["-r", archiveURL.path]
-        args += items.map { $0.url.lastPathComponent }
+        var args = ["-r", tempURL.path]
+        args += itemNames
         process.arguments = args
 
         let stdoutPipe = Pipe()
@@ -244,6 +243,31 @@ actor FileSystemService {
                 try process.run()
             } catch {
                 continuation.resume(throwing: error)
+            }
+        }
+
+        // Rename from temp to a human-readable name, resolving conflicts atomically
+        var archiveName = "Archive"
+        var archiveURL = directory.appendingPathComponent("\(archiveName).zip")
+        var counter = 2
+        while true {
+            do {
+                try FileManager.default.moveItem(at: tempURL, to: archiveURL)
+                break
+            } catch let error as NSError
+                where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                guard counter <= 1000 else {
+                    // Clean up temp file before throwing
+                    try? FileManager.default.removeItem(at: tempURL)
+                    throw NSError(
+                        domain: NSCocoaErrorDomain,
+                        code: NSFileWriteFileExistsError,
+                        userInfo: [NSLocalizedDescriptionKey: "Could not find a unique archive name."]
+                    )
+                }
+                archiveName = "Archive \(counter)"
+                archiveURL = directory.appendingPathComponent("\(archiveName).zip")
+                counter += 1
             }
         }
     }

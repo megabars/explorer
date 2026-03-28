@@ -84,17 +84,27 @@ struct FocusedTextField: NSViewRepresentable {
             parent.onTextChange(value)
         }
 
+        /// Tracks whether onCommit or onCancel was already called for the current editing session,
+        /// preventing the duplicate call from controlTextDidEndEditing after doCommandBy.
+        var didFinishEditing = false
+
         func controlTextDidEndEditing(_ obj: Notification) {
             didBecomeFirstResponder = false
+            guard !didFinishEditing else {
+                didFinishEditing = false
+                return
+            }
             parent.onCancel()
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                didFinishEditing = true
                 parent.onCommit()
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                didFinishEditing = true
                 parent.onCancel()
                 return true
             }

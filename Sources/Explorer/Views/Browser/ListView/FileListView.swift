@@ -46,6 +46,7 @@ struct FileListView: View {
             },
             tagsColumnVisible: browser.showTagsColumn,
             onTagsColumnVisibilityChanged: { browser.showTagsColumn = $0 },
+            cutURLs: browser.cutURLs,
             sortKey: browser.sortKey,
             sortAscending: browser.sortAscending,
             onSortChange: { key, ascending in

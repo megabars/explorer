@@ -30,6 +30,8 @@ struct FileListNSTableView: NSViewRepresentable {
     // Tags column
     var tagsColumnVisible: Bool
     let onTagsColumnVisibilityChanged: (Bool) -> Void
+    // Cut indicator
+    var cutURLs: Set<URL>
     // Sorting
     var sortKey: BrowserViewModel.SortKey
     var sortAscending: Bool
@@ -135,7 +137,11 @@ struct FileListNSTableView: NSViewRepresentable {
         // Reload when item list or tag content changed — preserves scroll position.
         // Skip reloadData while rename is in progress to avoid destroying the editing cell.
         let newIDs = items.map(\.id)
-        let newTagsHash = items.reduce(into: 0) { $0 ^= $1.url.hashValue &+ $1.tags.joined().hashValue }
+        let newTagsHash: Int = {
+            var hasher = Hasher()
+            for item in items { hasher.combine(item.url); hasher.combine(item.tags) }
+            return hasher.finalize()
+        }()
         if newIDs != context.coordinator.lastItemIDs || newTagsHash != context.coordinator.lastTagsHash {
             // If the item being renamed disappeared, cancel rename first.
             if let renaming = renamingItem, !items.contains(where: { $0.id == renaming.id }) {
@@ -218,7 +224,9 @@ struct FileListNSTableView: NSViewRepresentable {
                     self.renamingRow = -1
                     return
                 }
-                guard let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NSTableCellView,
+                let nameColIdx = tableView.column(withIdentifier: .init("name"))
+                guard nameColIdx >= 0,
+                      let cell = tableView.view(atColumn: nameColIdx, row: row, makeIfNecessary: false) as? NSTableCellView,
                       let tf = cell.textField else { return }
                 self.editingTextField = tf
                 tf.isEditable = true
@@ -313,24 +321,29 @@ struct FileListNSTableView: NSViewRepresentable {
             let items = parent.items
             guard row < items.count else { return nil }
             let item = items[row]
+            let isCut = parent.cutURLs.contains(item.url)
             let colID = tableColumn?.identifier.rawValue ?? ""
 
+            let view: NSView?
             switch colID {
             case "tags":
-                return tagsCell(for: item, in: tableView)
+                view = tagsCell(for: item, in: tableView)
             case "name":
-                return nameCell(for: item, in: tableView)
+                view = nameCell(for: item, in: tableView)
             case "date":
                 let text = item.contentModificationDate.map { dateFormatter.string(from: $0) } ?? "—"
-                return labelCell(id: "dateCell", text: text, alignment: .left, in: tableView)
+                view = labelCell(id: "dateCell", text: text, alignment: .left, in: tableView)
             case "size":
                 let text = item.isDirectory ? "—" : item.fileSize.map { FileSizeFormatter.string(fromByteCount: $0) } ?? "—"
-                return labelCell(id: "sizeCell", text: text, alignment: .right, in: tableView)
+                view = labelCell(id: "sizeCell", text: text, alignment: .right, in: tableView)
             case "kind":
-                return labelCell(id: "kindCell", text: item.kind, alignment: .left, in: tableView)
+                view = labelCell(id: "kindCell", text: item.kind, alignment: .left, in: tableView)
             default:
-                return nil
+                view = nil
             }
+            // Apply cut opacity to all cells of cut items
+            view?.alphaValue = isCut ? 0.4 : 1.0
+            return view
         }
 
         private func tagsCell(for item: FileItem, in tableView: NSTableView) -> NSView {

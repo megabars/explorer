@@ -14,7 +14,15 @@ struct FileGridView: View {
                 ForEach(browser.sortedItems) { item in
                     FileIconCell(
                         item: item,
-                        isSelected: browser.selection.contains(item.url)
+                        isSelected: browser.selection.contains(item.url),
+                        isCut: browser.cutURLs.contains(item.url),
+                        isRenaming: browser.renamingItem?.id == item.id,
+                        renameText: Binding(
+                            get: { browser.renameText },
+                            set: { browser.renameText = $0 }
+                        ),
+                        onCommitRename: { browser.commitRename(navigation: navigation) },
+                        onCancelRename: { browser.cancelRename() }
                     )
                     // Double-tap must be declared before single-tap so SwiftUI tries it first.
                     .onTapGesture(count: 2) {
@@ -49,7 +57,7 @@ struct FileGridView: View {
                             browser.open(item, navigation: navigation)
                         }
                         if !item.isDirectory && !item.isPackage {
-                            let apps = NSWorkspace.shared.urlsForApplications(toOpen: item.url)
+                            let apps = browser.openWithApps(for: item.url)
                             if !apps.isEmpty {
                                 let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: item.url)
                                 Menu("Open With") {
@@ -131,6 +139,22 @@ struct FileGridView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers: providers, into: navigation.currentURL)
         }
+        .onKeyPress(.leftArrow) {
+            moveSelection(by: -1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            moveSelection(by: 1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            moveSelection(by: -columnsPerRow)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            moveSelection(by: columnsPerRow)
+            return .handled
+        }
         .contextMenu {
             Button("New Folder") {
                 NotificationCenter.default.post(name: .newFolderRequested, object: nil)
@@ -150,7 +174,28 @@ struct FileGridView: View {
         }
     }
 
+    /// Approximate columns per row — matches the adaptive grid (minimum: 80).
+    private var columnsPerRow: Int { max(1, Int(NSScreen.main?.frame.width ?? 800) / 100) }
+
+    private func moveSelection(by offset: Int) {
+        let allItems = browser.sortedItems
+        guard !allItems.isEmpty else { return }
+        let currentIndex: Int
+        if let selectedURL = browser.selection.first,
+           let idx = allItems.firstIndex(where: { $0.url == selectedURL }) {
+            currentIndex = idx
+        } else {
+            currentIndex = -1
+        }
+        let newIndex = max(0, min(allItems.count - 1, currentIndex + offset))
+        let item = allItems[newIndex]
+        browser.selection = [item.url]
+        browser.lastSelectedURL = item.url
+    }
+
     private func handleDrop(providers: [NSItemProvider], into destination: URL) -> Bool {
+        // Check if Option key is held — if so, copy instead of move
+        let shouldCopy = NSEvent.modifierFlags.contains(.option)
         var handled = false
         for provider in providers {
             provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
@@ -158,7 +203,17 @@ struct FileGridView: View {
                       let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
                 Task { @MainActor in
                     do {
-                        try await FileSystemService.shared.move(from: [url], to: destination)
+                        if shouldCopy {
+                            let fileItem = FileItem(
+                                id: url, url: url, name: url.lastPathComponent,
+                                isDirectory: false, isPackage: false, isHidden: false,
+                                isSymlink: false, fileSize: nil, contentModificationDate: nil,
+                                creationDate: nil, kind: "", tags: []
+                            )
+                            try await FileSystemService.shared.copy(items: [fileItem], to: destination)
+                        } else {
+                            try await FileSystemService.shared.move(from: [url], to: destination)
+                        }
                     } catch {
                         browser.errorMessage = error.localizedDescription
                     }
@@ -173,18 +228,42 @@ struct FileGridView: View {
 private struct FileIconCell: View {
     let item: FileItem
     let isSelected: Bool
+    var isCut: Bool = false
+    var isRenaming: Bool = false
+    var renameText: Binding<String> = .constant("")
+    var onCommitRename: () -> Void = {}
+    var onCancelRename: () -> Void = {}
+
+    @FocusState private var isRenameFocused: Bool
 
     var body: some View {
         VStack(spacing: 4) {
             Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
                 .resizable()
                 .frame(width: 48, height: 48)
+                .opacity(isCut ? 0.4 : 1.0)
 
-            Text(item.name)
-                .font(.system(size: 11))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .truncationMode(.middle)
+            if isRenaming {
+                TextField("", text: renameText)
+                    .font(.system(size: 11))
+                    .multilineTextAlignment(.center)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 90)
+                    .focused($isRenameFocused)
+                    .onSubmit { onCommitRename() }
+                    .onKeyPress(.escape) {
+                        onCancelRename()
+                        return .handled
+                    }
+                    .onAppear { isRenameFocused = true }
+            } else {
+                Text(item.name)
+                    .font(.system(size: 11))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .truncationMode(.middle)
+                    .opacity(isCut ? 0.4 : 1.0)
+            }
 
             if !item.tags.isEmpty {
                 HStack(spacing: 3) {
@@ -204,7 +283,7 @@ private struct FileIconCell: View {
     }
 }
 
-func tagColor(_ tag: String) -> Color {
+private func tagColor(_ tag: String) -> Color {
     switch tag.lowercased() {
     case "red":    return .red
     case "orange": return .orange

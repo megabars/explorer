@@ -26,6 +26,10 @@ struct SidebarView: View {
         .task {
             await vm.refreshFavoriteAvailability()
         }
+        // Re-check availability when volumes change (mount/unmount)
+        .onChange(of: vm.volumes.count) { _, _ in
+            Task { await vm.refreshFavoriteAvailability() }
+        }
     }
 
     private func sidebarRow(_ item: SidebarItem) -> some View {

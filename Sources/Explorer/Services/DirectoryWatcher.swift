@@ -2,6 +2,8 @@ import Foundation
 
 /// Watches a single directory for changes using DispatchSource (kqueue-based).
 /// Delivers debounced change events on the main actor.
+/// All mutable state is accessed exclusively on `@MainActor` (via start/stop),
+/// so the `@unchecked Sendable` conformance is safe.
 final class DirectoryWatcher: @unchecked Sendable {
     private var source: DispatchSourceFileSystemObject?
     /// Pending debounce work item — always accessed on the main queue.
@@ -14,6 +16,8 @@ final class DirectoryWatcher: @unchecked Sendable {
 
     /// Starts watching `url` for filesystem changes.
     /// Returns `false` if the directory could not be opened (e.g. permission denied).
+    /// Must be called on `@MainActor` (enforced by the caller, not annotated here
+    /// to avoid Swift 6 inheriting actor isolation into DispatchSource handler closures).
     @discardableResult
     func start(watching url: URL, onChange: @escaping @MainActor @Sendable () -> Void) -> Bool {
         stop()
@@ -55,6 +59,7 @@ final class DirectoryWatcher: @unchecked Sendable {
         return true
     }
 
+    /// Must be called on `@MainActor` (same reasoning as start).
     func stop() {
         debounceItem?.cancel()
         debounceItem = nil
@@ -63,6 +68,13 @@ final class DirectoryWatcher: @unchecked Sendable {
     }
 
     deinit {
-        stop()
+        // Capture references before self is deallocated — deinit may run on any thread,
+        // but these objects are safe to cancel from any thread.
+        let s = source
+        let d = debounceItem
+        DispatchQueue.main.async {
+            d?.cancel()
+            s?.cancel()
+        }
     }
 }

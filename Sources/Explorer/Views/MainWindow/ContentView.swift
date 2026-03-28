@@ -65,6 +65,9 @@ struct ContentView: View {
     }
 
     private var statusText: String {
+        if let error = browser.errorMessage {
+            return "Error: \(error)"
+        }
         let total = browser.sortedItems.count
         let selected = browser.selection.count
         if selected > 0 {
@@ -134,7 +137,7 @@ private extension View {
                 browser.copy()
             }
             .onReceive(NotificationCenter.default.publisher(for: .pasteRequested)) { _ in
-                browser.paste(into: navigation.currentURL)
+                browser.pasteFromSystemPasteboard(into: navigation.currentURL)
             }
             .onReceive(NotificationCenter.default.publisher(for: .duplicateRequested)) { _ in
                 browser.duplicate()
@@ -146,6 +149,9 @@ private extension View {
                 } else {
                     isSearching.wrappedValue = true
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .undoRequested)) { _ in
+                browser.undo()
             }
             .onReceive(NotificationCenter.default.publisher(for: .renameRequestedForURL)) { note in
                 guard let url = note.userInfo?["url"] as? URL,

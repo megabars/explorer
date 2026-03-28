@@ -60,6 +60,7 @@ struct ExplorerToolbar: ToolbarContent {
 
             Button {
                 browser.showHidden.toggle()
+                browser.searchQuery = ""
                 browser.load(url: navigation.currentURL)
             } label: {
                 Image(systemName: browser.showHidden ? "eye" : "eye.slash")

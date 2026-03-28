@@ -9,6 +9,9 @@ final class BrowserViewModel {
     var selection: Set<URL> = []
     var viewMode: ViewMode = .list
     var isLoading: Bool = false
+    /// Error from loading a directory — shown inline in BrowserContainerView instead of content.
+    var loadError: String?
+    /// Error from file operations (rename, trash, paste, etc.) — shown as an alert.
     var errorMessage: String?
     var showHidden: Bool = false
     var showTagsColumn: Bool = UserDefaults.standard.object(forKey: "showTagsColumn") as? Bool ?? true {
@@ -18,6 +21,13 @@ final class BrowserViewModel {
     // Clipboard state
     var clipboardItems: [FileItem] = []
     var clipboardIsCut: Bool = false
+
+    // Undo state — stores the last file operation for Cmd+Z
+    struct UndoableAction {
+        enum Kind { case trash(originalURLs: [URL], trashedURLs: [URL]) }
+        let kind: Kind
+    }
+    private(set) var lastAction: UndoableAction?
 
     // Rename state
     var renamingItem: FileItem?
@@ -33,6 +43,17 @@ final class BrowserViewModel {
     // Search / filter
     var searchQuery: String = ""
 
+    // Cache for "Open With" apps — keyed by file extension to avoid repeated I/O
+    private var openWithCache: [String: [URL]] = [:]
+
+    func openWithApps(for url: URL) -> [URL] {
+        let ext = url.pathExtension.lowercased()
+        if let cached = openWithCache[ext] { return cached }
+        let apps = NSWorkspace.shared.urlsForApplications(toOpen: url)
+        openWithCache[ext] = apps
+        return apps
+    }
+
     // Shift+Click anchor for range selection
     var lastSelectedURL: URL?
 
@@ -47,7 +68,7 @@ final class BrowserViewModel {
     func load(url: URL) {
         loadTask?.cancel()
         isLoading = true
-        errorMessage = nil
+        loadError = nil
 
         loadTask = Task {
             do {
@@ -58,7 +79,7 @@ final class BrowserViewModel {
                 isLoading = false
             } catch {
                 if Task.isCancelled { return }
-                errorMessage = error.localizedDescription
+                loadError = error.localizedDescription
                 items = []
                 isLoading = false
             }
@@ -75,8 +96,11 @@ final class BrowserViewModel {
         do {
             let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
             items = loaded
+            // Prune selection to only URLs still present in the new listing
+            let currentURLs = Set(loaded.map(\.url))
+            selection = selection.intersection(currentURLs)
         } catch {
-            errorMessage = error.localizedDescription
+            loadError = error.localizedDescription
         }
     }
 
@@ -107,9 +131,32 @@ final class BrowserViewModel {
         guard !items.isEmpty else { return }
         Task {
             do {
-                try await TrashService.shared.trash(items: items)
+                let mapping = try await TrashService.shared.trash(items: items)
+                let originals = items.map(\.url)
+                let trashed = originals.compactMap { mapping[$0] }
+                if !trashed.isEmpty {
+                    lastAction = UndoableAction(kind: .trash(originalURLs: originals, trashedURLs: trashed))
+                }
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Undoes the last undoable action (currently: restoring trashed files).
+    func undo() {
+        guard let action = lastAction else { return }
+        lastAction = nil
+        switch action.kind {
+        case .trash(let originalURLs, let trashedURLs):
+            Task {
+                do {
+                    for (original, trashed) in zip(originalURLs, trashedURLs) {
+                        try await fs.move(from: [trashed], to: original.deletingLastPathComponent())
+                    }
+                } catch {
+                    errorMessage = "Undo failed: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -161,11 +208,57 @@ final class BrowserViewModel {
     func copy() {
         clipboardItems = selectedItems
         clipboardIsCut = false
+        writeToSystemPasteboard(items: selectedItems, isCut: false)
     }
 
     func cut() {
         clipboardItems = selectedItems
         clipboardIsCut = true
+        writeToSystemPasteboard(items: selectedItems, isCut: true)
+    }
+
+    /// Writes file URLs to NSPasteboard so Finder and other apps can paste them.
+    private func writeToSystemPasteboard(items: [FileItem], isCut: Bool) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        let urls = items.map(\.url) as [NSURL]
+        pb.writeObjects(urls)
+        // Finder uses "com.apple.pasteboard.promised-file-content-type" for cut;
+        // we mark our cut state via a custom pasteboard type.
+        if isCut {
+            pb.setData(Data(), forType: NSPasteboard.PasteboardType("com.apple.pasteboard.cut"))
+        }
+    }
+
+    /// Reads file URLs from NSPasteboard (e.g. from Finder copy).
+    func pasteFromSystemPasteboard(into destination: URL) {
+        let pb = NSPasteboard.general
+        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true
+        ]) as? [URL], !urls.isEmpty else {
+            // Fall back to in-memory clipboard
+            paste(into: destination)
+            return
+        }
+        let isCut = pb.data(forType: NSPasteboard.PasteboardType("com.apple.pasteboard.cut")) != nil
+        Task {
+            do {
+                if isCut {
+                    try await fs.move(from: urls, to: destination)
+                    pb.clearContents()
+                } else {
+                    let fileItems = urls.map { url in
+                        FileItem(id: url, url: url, name: url.lastPathComponent,
+                                 isDirectory: false, isPackage: false, isHidden: false,
+                                 isSymlink: false, fileSize: nil, contentModificationDate: nil,
+                                 creationDate: nil, kind: "", tags: [])
+                    }
+                    try await fs.copy(items: fileItems, to: destination)
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     func paste(into destination: URL) {
@@ -295,6 +388,11 @@ final class BrowserViewModel {
 
     var selectedItems: [FileItem] {
         items.filter { selection.contains($0.url) }
+    }
+
+    /// URLs currently marked as cut — views should display these at reduced opacity.
+    var cutURLs: Set<URL> {
+        clipboardIsCut ? Set(clipboardItems.map(\.url)) : []
     }
 
     /// Filtered and sorted view of items — use this in all views instead of `items` directly.

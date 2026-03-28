@@ -53,21 +53,27 @@ final class SidebarViewModel {
         guard let paths = UserDefaults.standard.array(forKey: defaultsKey) as? [String], !paths.isEmpty else {
             return SidebarItem.defaults
         }
-        let fm = FileManager.default
         var seen = Set<URL>()
         return paths.compactMap { path -> SidebarItem? in
-            let url = URL(fileURLWithPath: path)
+            // Support both legacy .path format and .absoluteString format
+            let url: URL
+            if path.hasPrefix("file://") {
+                guard let parsed = URL(string: path) else { return nil }
+                url = parsed
+            } else {
+                url = URL(fileURLWithPath: path)
+            }
             let key = url.standardizedFileURL
             guard seen.insert(key).inserted else { return nil }
             let name = url.lastPathComponent.isEmpty ? path : url.lastPathComponent
-            // Use original defaults icons for known paths
             let icon = defaultIcon(for: url)
             return SidebarItem(id: url, url: url, name: name, systemImage: icon, section: .favorites)
         }
     }
 
     private func saveFavorites() {
-        let paths = favorites.map(\.url.path)
+        // Use absoluteString for lossless URL round-trip (handles percent-encoded characters)
+        let paths = favorites.map(\.url.absoluteString)
         UserDefaults.standard.set(paths, forKey: Self.defaultsKey)
     }
 
