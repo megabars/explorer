@@ -54,6 +54,12 @@ struct ExplorerApp: App {
             }
             // Note: "Select All" (Cmd+A) is intentionally not overridden here.
             // NSTableView handles it natively via the AppKit responder chain.
+            CommandGroup(after: .saveItem) {
+                Button("Get Info") {
+                    NotificationCenter.default.post(name: .getInfoRequested, object: nil)
+                }
+                .keyboardShortcut("i", modifiers: .command)
+            }
         }
     }
 }
@@ -67,4 +73,5 @@ extension Notification.Name {
     static let duplicateRequested = Notification.Name("duplicateRequested")
     static let filterRequested = Notification.Name("filterRequested")
     static let undoRequested = Notification.Name("undoRequested")
+    static let getInfoRequested = Notification.Name("getInfoRequested")
 }

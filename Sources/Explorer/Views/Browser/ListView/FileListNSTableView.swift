@@ -673,7 +673,7 @@ struct FileListNSTableView: NSViewRepresentable {
 
         @objc func menuGetInfo(_ sender: NSMenuItem) {
             guard let url = sender.representedObject as? URL else { return }
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+            FileInfoWindowManager.shared.showInfo(for: url)
         }
 
         @objc func menuOpenWith(_ sender: NSMenuItem) {

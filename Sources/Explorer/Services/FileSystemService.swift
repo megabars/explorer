@@ -1,5 +1,24 @@
 import Foundation
 
+struct FileExtendedInfo: Sendable {
+    let url: URL
+    let name: String
+    let kind: String
+    let isDirectory: Bool
+    let isSymlink: Bool
+    let isHidden: Bool
+    let tags: [String]
+    let fileSize: Int64?
+    let directoryItemCount: Int?
+    let creationDate: Date?
+    let modificationDate: Date?
+    let parentPath: String
+    let symlinkTarget: String?
+    let posixPermissionsString: String
+    let ownerName: String
+    let groupName: String
+}
+
 actor FileSystemService {
     static let shared = FileSystemService()
 
@@ -58,6 +77,12 @@ actor FileSystemService {
         let newURL = item.url.deletingLastPathComponent().appendingPathComponent(newName)
         try FileManager.default.moveItem(at: item.url, to: newURL)
         return newURL
+    }
+
+    /// Moves a file to an exact destination URL (not a directory).
+    /// Used by undo to restore trashed files to their original paths with their original names.
+    func restoreItem(from source: URL, to destination: URL) throws {
+        try FileManager.default.moveItem(at: source, to: destination)
     }
 
     func copy(items: [FileItem], to destination: URL) throws {
@@ -199,6 +224,62 @@ actor FileSystemService {
                 }
             }
         }
+    }
+
+    func extendedInfo(for url: URL) async throws -> FileExtendedInfo {
+        let keys: Set<URLResourceKey> = [
+            .nameKey, .isDirectoryKey, .isPackageKey, .isHiddenKey, .isSymbolicLinkKey,
+            .fileSizeKey, .contentModificationDateKey, .creationDateKey,
+            .localizedTypeDescriptionKey, .tagNamesKey
+        ]
+        let values = try url.resourceValues(forKeys: keys)
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+
+        let isDir = values.isDirectory ?? false
+        let isPackage = values.isPackage ?? false
+
+        var itemCount: Int? = nil
+        if isDir && !isPackage {
+            itemCount = (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.count
+        }
+
+        var symlinkTarget: String? = nil
+        if values.isSymbolicLink == true {
+            symlinkTarget = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+        }
+
+        let mode = (attrs[.posixPermissions] as? Int16) ?? 0
+        let perms = Self.formatPosixPermissions(mode, isDirectory: isDir)
+
+        return FileExtendedInfo(
+            url: url,
+            name: values.name ?? url.lastPathComponent,
+            kind: values.localizedTypeDescription ?? "Unknown",
+            isDirectory: isDir,
+            isSymlink: values.isSymbolicLink ?? false,
+            isHidden: values.isHidden ?? false,
+            tags: values.tagNames ?? [],
+            fileSize: values.fileSize.map { Int64($0) },
+            directoryItemCount: itemCount,
+            creationDate: values.creationDate,
+            modificationDate: values.contentModificationDate,
+            parentPath: url.deletingLastPathComponent().path,
+            symlinkTarget: symlinkTarget,
+            posixPermissionsString: perms,
+            ownerName: (attrs[.ownerAccountName] as? String) ?? "unknown",
+            groupName: (attrs[.groupOwnerAccountName] as? String) ?? "unknown"
+        )
+    }
+
+    private static func formatPosixPermissions(_ mode: Int16, isDirectory: Bool) -> String {
+        let bits: [(Int16, Character)] = [
+            (0o400, "r"), (0o200, "w"), (0o100, "x"),
+            (0o040, "r"), (0o020, "w"), (0o010, "x"),
+            (0o004, "r"), (0o002, "w"), (0o001, "x")
+        ]
+        var s = isDirectory ? "d" : "-"
+        for (bit, ch) in bits { s.append(mode & bit != 0 ? ch : "-") }
+        return s
     }
 
     /// Compresses the given items into an Archive.zip (or Archive N.zip) in the given directory.

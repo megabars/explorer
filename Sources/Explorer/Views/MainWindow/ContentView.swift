@@ -158,5 +158,10 @@ private extension View {
                       let item = browser.items.first(where: { $0.url == url }) else { return }
                 browser.startRename(item)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .getInfoRequested)) { _ in
+                for url in browser.selection {
+                    FileInfoWindowManager.shared.showInfo(for: url)
+                }
+            }
     }
 }

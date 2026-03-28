@@ -24,7 +24,8 @@ final class BrowserViewModel {
 
     // Undo state — stores the last file operation for Cmd+Z
     struct UndoableAction {
-        enum Kind { case trash(originalURLs: [URL], trashedURLs: [URL]) }
+        // Pairs keep original↔trashed together so zip never mismatches when only some items were trashed.
+        enum Kind { case trash(pairs: [(original: URL, trashed: URL)]) }
         let kind: Kind
     }
     private(set) var lastAction: UndoableAction?
@@ -62,6 +63,8 @@ final class BrowserViewModel {
     private let fs = FileSystemService.shared
     /// Suppresses watcher-triggered reloads during explicit reloads (e.g. after newFolder).
     private var suppressReload: Bool = false
+    /// Tracks the URL currently being loaded so reload() can detect stale callbacks.
+    private var currentLoadURL: URL?
 
     // MARK: - Loading
 
@@ -69,6 +72,10 @@ final class BrowserViewModel {
         loadTask?.cancel()
         isLoading = true
         loadError = nil
+        currentLoadURL = url
+        // Clear undo state on navigation — the trashed files belong to a different directory
+        // and restoring them would be unexpected from the user's perspective.
+        lastAction = nil
 
         loadTask = Task {
             do {
@@ -85,16 +92,23 @@ final class BrowserViewModel {
             }
         }
 
-        watcher.start(watching: url) { [weak self] in
+        if !watcher.start(watching: url, onChange: { [weak self] in
             guard let self else { return }
             Task { await self.reload(url: url) }
+        }) {
+            // Directory is readable but can't be watched (e.g. permission denied on kqueue).
+            // Contents still load normally; live updates just won't happen.
+            errorMessage = "This directory cannot be watched for changes."
         }
     }
 
     private func reload(url: URL) async {
-        guard !isLoading, !suppressReload else { return }
+        // Guard against stale watcher callbacks arriving after navigation to a different directory.
+        guard !isLoading, !suppressReload, currentLoadURL == url else { return }
         do {
             let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
+            // Re-check after the async call — load(url:) may have been called during the await.
+            guard currentLoadURL == url else { return }
             items = loaded
             // Prune selection to only URLs still present in the new listing
             let currentURLs = Set(loaded.map(\.url))
@@ -132,10 +146,15 @@ final class BrowserViewModel {
         Task {
             do {
                 let mapping = try await TrashService.shared.trash(items: items)
-                let originals = items.map(\.url)
-                let trashed = originals.compactMap { mapping[$0] }
-                if !trashed.isEmpty {
-                    lastAction = UndoableAction(kind: .trash(originalURLs: originals, trashedURLs: trashed))
+                // Build pairs so each original is matched with its actual trashed URL.
+                // compactMap drops items that were not successfully trashed (no entry in mapping).
+                // Using pairs avoids the mis-zip bug that occurs when only a subset is trashed.
+                let pairs: [(original: URL, trashed: URL)] = items.compactMap { item in
+                    guard let trashedURL = mapping[item.url] else { return nil }
+                    return (original: item.url, trashed: trashedURL)
+                }
+                if !pairs.isEmpty {
+                    lastAction = UndoableAction(kind: .trash(pairs: pairs))
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -148,11 +167,13 @@ final class BrowserViewModel {
         guard let action = lastAction else { return }
         lastAction = nil
         switch action.kind {
-        case .trash(let originalURLs, let trashedURLs):
+        case .trash(let pairs):
             Task {
                 do {
-                    for (original, trashed) in zip(originalURLs, trashedURLs) {
-                        try await fs.move(from: [trashed], to: original.deletingLastPathComponent())
+                    for (original, trashed) in pairs {
+                        // restoreItem moves to the exact original URL, preserving the original filename
+                        // even if the file was renamed in Trash due to a naming conflict.
+                        try await fs.restoreItem(from: trashed, to: original)
                     }
                 } catch {
                     errorMessage = "Undo failed: \(error.localizedDescription)"
@@ -317,9 +338,14 @@ final class BrowserViewModel {
             renamingItem = nil
             return
         }
-        // Validate: macOS filenames cannot contain '/' or NUL
+        // Validate: macOS filenames cannot contain '/' or NUL, and '.' / '..' are reserved path components.
         guard !trimmed.contains("/"), !trimmed.contains("\0") else {
             errorMessage = "The name cannot contain \"/\"."
+            renamingItem = nil
+            return
+        }
+        guard trimmed != ".", trimmed != ".." else {
+            errorMessage = "The name \"\(trimmed)\" is reserved and cannot be used."
             renamingItem = nil
             return
         }

@@ -68,13 +68,12 @@ final class DirectoryWatcher: @unchecked Sendable {
     }
 
     deinit {
-        // Capture references before self is deallocated — deinit may run on any thread,
-        // but these objects are safe to cancel from any thread.
-        let s = source
-        let d = debounceItem
-        DispatchQueue.main.async {
-            d?.cancel()
-            s?.cancel()
-        }
+        // DispatchSourceProtocol.cancel() and DispatchWorkItem.cancel() are both thread-safe
+        // per GCD documentation, so we call them directly without dispatching to main.
+        // This avoids the data race of reading @MainActor-isolated properties from deinit
+        // (which may run on any thread) and then dispatching async — a window where the
+        // source could fire between capture and cancellation.
+        debounceItem?.cancel()
+        source?.cancel()
     }
 }

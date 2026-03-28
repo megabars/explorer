@@ -90,7 +90,7 @@ struct FileGridView: View {
                             browser.trash(items: [item])
                         }
                         Button("Get Info") {
-                            NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                            FileInfoWindowManager.shared.showInfo(for: item.url)
                         }
                         // Tags submenu
                         Menu("Tags") {
@@ -194,19 +194,26 @@ struct FileGridView: View {
     }
 
     private func handleDrop(providers: [NSItemProvider], into destination: URL) -> Bool {
-        // Check if Option key is held — if so, copy instead of move
+        guard !providers.isEmpty else { return false }
+        // Check if Option key is held — if so, copy instead of move.
+        // Capture before any async work so the key state at drop time is used.
         let shouldCopy = NSEvent.modifierFlags.contains(.option)
-        var handled = false
         for provider in providers {
-            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, error in
                 guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                    // Surface load errors so the user knows the drop didn't succeed.
+                    let msg = error?.localizedDescription ?? "Could not read dropped item."
+                    Task { @MainActor in browser.errorMessage = msg }
+                    return
+                }
                 Task { @MainActor in
                     do {
                         if shouldCopy {
+                            let status = await FileSystemService.shared.itemStatus(at: url)
                             let fileItem = FileItem(
                                 id: url, url: url, name: url.lastPathComponent,
-                                isDirectory: false, isPackage: false, isHidden: false,
+                                isDirectory: status.isDirectory, isPackage: false, isHidden: false,
                                 isSymlink: false, fileSize: nil, contentModificationDate: nil,
                                 creationDate: nil, kind: "", tags: []
                             )
@@ -219,9 +226,8 @@ struct FileGridView: View {
                     }
                 }
             }
-            handled = true
         }
-        return handled
+        return true
     }
 }
 

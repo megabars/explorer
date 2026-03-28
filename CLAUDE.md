@@ -22,14 +22,14 @@ pkill -9 Explorer
 Swift 6 strict concurrency (`swiftLanguageMode(.v6)`), macOS 14+, SPM executable target.
 
 ### Concurrency model
-- `FileSystemService` — `actor`, all `FileManager` calls isolated here. Key methods: `listDirectory`, `completions(for:showHidden:)`, `isReadable(at:)`, `volumeName(for:)`, `exists(at:)`, `itemStatus(at:)`, `rename(at:to:)`, `copy(at:to:)`, `createDirectory(at:)`. Never call `FileManager` directly on `@MainActor` — use this actor instead.
+- `FileSystemService` — `actor`, all `FileManager` calls isolated here. Key methods: `listDirectory`, `completions(for:showHidden:)`, `isReadable(at:)`, `volumeName(for:)`, `exists(at:)`, `itemStatus(at:)`, `rename(at:to:)`, `copy(at:to:)`, `createDirectory(at:)`, `restoreItem(from:to:)` (moves to an exact destination URL, used by undo to restore trashed files to their original paths). Never call `FileManager` directly on `@MainActor` — use this actor instead.
 - `BrowserViewModel`, `SidebarViewModel`, `AddressBarViewModel` — `@Observable @MainActor`
 - `NavigationState` — `@Observable @MainActor`, owns back/forward stack (no history list)
-- `DirectoryWatcher` — `@unchecked Sendable` class wrapping `DispatchSource.makeFileSystemObjectSource`, delivers events debounced (250 ms) via `DispatchWorkItem` on the main queue → `Task { @MainActor in … }`. Uses a `generation` counter incremented on each `start()` to discard stale dispatches that survive a `stop()`/`start()` cycle — without this, a rapid directory change can trigger a reload for the old URL.
+- `DirectoryWatcher` — `@unchecked Sendable` class wrapping `DispatchSource.makeFileSystemObjectSource`, delivers events debounced (250 ms) via `DispatchWorkItem` on the main queue → `Task { @MainActor in … }`. Uses a `generation` counter incremented on each `start()` to discard stale dispatches that survive a `stop()`/`start()` cycle. `start()` returns `Bool` — `false` if the directory cannot be watched (e.g. kqueue permission denied). `deinit` cancels source and debounce item directly — `DispatchSourceProtocol.cancel()` and `DispatchWorkItem.cancel()` are GCD-thread-safe, so no main-queue dispatch is needed.
 - `TrashService` / `VolumeService` — `@MainActor` singletons; `TrashService` delegates to `NSWorkspace.shared.recycle` with partial-failure recovery (if a batch trash fails, retries items individually, skipping already-trashed files, and collects per-item errors). `VolumeService` observes mount/unmount notifications.
 
 ### Key data flow
-`NavigationState.currentURL` is the single source of truth for the current path. `BrowserContainerView` observes it via `.onChange(of: navigation.currentURL)` and calls `BrowserViewModel.load(url:)` which reads the directory via `FileSystemService` and starts a `DirectoryWatcher`.
+`NavigationState.currentURL` is the single source of truth for the current path. `BrowserContainerView` observes it via `.onChange(of: navigation.currentURL)` and calls `BrowserViewModel.load(url:)` which reads the directory via `FileSystemService` and starts a `DirectoryWatcher`. `BrowserViewModel` tracks `currentLoadURL` to guard against stale watcher callbacks: `reload(url:)` checks `currentLoadURL == url` both before and after the async `listDirectory` call to discard results that arrived after a navigation.
 
 All view-model instances are created in `ContentView` as `@State` and passed down by reference — there is no environment injection.
 
@@ -41,6 +41,8 @@ Notification names defined in `ExplorerApp.swift`:
 - `.renameRequestedForURL` — rename a specific URL (from NSTableView context menu)
 - `.cutRequested` / `.copyRequested` / `.pasteRequested` / `.duplicateRequested` — clipboard ops
 - `.filterRequested` — toggle search bar (Cmd+F)
+- `.undoRequested` — Undo (Cmd+Z)
+- `.getInfoRequested` — open Get Info panel for selected items (Cmd+I)
 
 ### Rename flow
 Inline rename in the list view is handled entirely in `FileListNSTableView`:
@@ -80,6 +82,12 @@ Tags are macOS Finder color tags stored via `NSURLTagNamesKey`. `FileSystemServi
 
 ### Non-persisted state
 `BrowserViewModel.viewMode` (list vs icon) and `showHidden` reset to `.list` / `false` on each launch — they are not saved to UserDefaults. Only `showTagsColumn` (key `"showTagsColumn"`) and sidebar favorites (key `"explorerFavorites"`) persist across launches.
+
+### Get Info panel
+`FileInfoWindowManager` (`Views/Info/`) — `@MainActor` singleton managing floating `NSPanel`s (one per URL). `showInfo(for:)` brings an existing panel to the front or creates a new one; closed panels are removed from the registry via `NSWindowDelegate`. Panels use `.nonactivatingPanel` so the file manager window stays key. `FileInfoView` is the SwiftUI content: three-state (loading / loaded / error), fetches `FileExtendedInfo` via `FileSystemService.extendedInfo(for:)` (which additionally reads POSIX permissions and owner via `FileManager.attributesOfItem`). Cmd+I is wired via the `NotificationCenter` pattern (`.getInfoRequested` notification, handled in `ContentView`).
+
+### Undo
+`BrowserViewModel` maintains a single `lastAction: UndoableAction?` — currently only trash operations are undoable (`UndoableAction.Kind.trash(pairs: [(original: URL, trashed: URL)])`). Pairs keep each original↔trashed URL together so a partial trash (some items fail) never mismatches via `zip`. Undo calls `FileSystemService.restoreItem(from:to:)` which moves to the exact original URL (preserving the original filename even if Trash renamed the file due to a conflict). Undo state is cleared on navigation. There is no undo stack.
 
 ### Packages and `suppressReload`
 `BrowserViewModel.open(_:navigation:)` checks `item.isPackage` — packages (`.app` bundles, etc.) are opened with `NSWorkspace.shared.open` rather than navigated into, same as regular files.
