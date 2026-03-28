@@ -55,13 +55,18 @@ The same rename flow is triggered from icon view via the `.contextMenu` "Rename"
 ### Sorting and filtering
 `BrowserViewModel` exposes `sortKey: SortKey` and `sortAscending: Bool`. The `sortedItems: [FileItem]` computed property filters by `searchQuery` (case-insensitive) then sorts — directories always first. `FileListNSTableView` sets `NSSortDescriptor` prototypes on each column and updates the sort state via `tableView(_:sortDescriptorsDidChange:)`.
 
+The search/filter bar is `SearchBarView` — a plain SwiftUI view shown/hidden by `BrowserContainerView` in response to `.filterRequested` notification. It binds directly to `BrowserViewModel.searchQuery`.
+
+### Multi-selection
+`BrowserViewModel.lastSelectedURL` stores the shift+click anchor for range selection. Both list and icon views implement shift+click range expansion by iterating `sortedItems` between the anchor and the clicked item.
+
 ### Sidebar
 `SidebarViewModel` persists favorites to `UserDefaults` as `[String]` (URL paths) under key `"explorerFavorites"`. On init it loads from UserDefaults, falling back to `SidebarItem.defaults`. `addFavorite(url:)` and `removeFavorite(id:)` mutate and immediately save. Volumes come from `VolumeService.shared`. Favorite availability is checked asynchronously via `refreshFavoriteAvailability()` (called from `.task` in `SidebarView`) to avoid blocking the main thread with `fileExists`.
 
 ### Address bar
 Two states controlled by `AddressBarViewModel.isEditing`:
-- **Idle** — `PathTokenView` breadcrumbs in a horizontal `ScrollView` with `ScrollViewReader`; auto-scrolls to the last component on navigation so the current folder is always visible. Never call `deletingLastPathComponent()` in a loop — use `url.pathComponents` string array (loop caused a 30 GB memory hang). Volume name resolved asynchronously via `.task(id: url)`.
-- **Editing** — `FocusedTextField` (`NSViewRepresentable` returning `TextFieldContainer`) activated on click or `Cmd+L`. `TextFieldContainer` is an `NSView` subclass that centers the `NSTextField` vertically via `layout()`. The field uses `cell.isScrollable = true` for horizontal scrolling of long paths. Exits on Enter, Escape, or focus loss.
+- **Idle** — `PathTokenView` breadcrumbs in a horizontal `ScrollView` with `ScrollViewReader`; auto-scrolls to the last component on navigation so the current folder is always visible. Never call `deletingLastPathComponent()` in a loop — use `URL.pathComponentURLs` (defined in `URL+Extensions.swift`) which iterates `pathComponents` string array once (the loop caused a 30 GB memory hang). Volume name resolved asynchronously via `.task(id: url)`.
+- **Editing** — `FocusedTextField` (`NSViewRepresentable` returning `TextFieldContainer`) activated on click or `Cmd+L`. `TextFieldContainer` is an `NSView` subclass that centers the `NSTextField` vertically via `layout()`. The field uses `cell.isScrollable = true` for horizontal scrolling of long paths. As the user types, `AddressBarViewModel` calls `FileSystemService.completions(for:showHidden:)` and shows matching subdirectories in `CompletionPopoverView` (a plain SwiftUI popover). Exits on Enter, Escape, or focus loss.
 
 `AddressBarView` has no custom background — the system toolbar capsule provides the visual container. The toolbar item uses `minWidth: 120` (not 500) so NSToolbar never pushes it to the `>>` overflow menu when paths are long.
 
@@ -81,7 +86,7 @@ Tags are macOS Finder color tags stored via `NSURLTagNamesKey`. `FileSystemServi
 ### AppKit bridges
 - `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view; coordinator conforms to `NSTextFieldDelegate` for inline rename, `NSMenuDelegate` for context menu, `NSTableViewDataSource/Delegate` for drag & drop, and `NSTableViewDelegate` column-visibility methods (`userCanChangeVisibilityOf`/`userDidChangeVisibilityOf`) marked `nonisolated` with `MainActor.assumeIsolated` (AppKit always calls them on main thread but newer SDK drops `@preconcurrency`)
 - `FocusedTextField` — `NSViewRepresentable` returning `TextFieldContainer` (NSView subclass that centers an NSTextField via `layout()`) for address bar editing
-- Right-click on empty space in list view shows "New Folder" + "Paste" via `menuNeedsUpdate` when `clickedRow < 0`; icon view shows the same via SwiftUI `.contextMenu` on the `ScrollView`
+- Right-click on empty space in list view shows "New Folder" + "Paste" + "Open in Terminal" via `menuNeedsUpdate` when `clickedRow < 0`; icon view shows the same via SwiftUI `.contextMenu` on the `ScrollView`. "Open in Terminal" uses `NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")` + `NSWorkspace.shared.open([url], withApplicationAt:)` — item context menu shows it only for directories, empty-space menu always shows it for the current directory. `FileListNSTableView` carries a `currentURL: URL` property for this purpose.
 
 ### .app bundle
 SPM builds a raw executable, not a `.app` bundle. `build_app.sh` wraps it:

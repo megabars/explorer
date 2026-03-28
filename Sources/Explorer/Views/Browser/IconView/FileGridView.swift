@@ -95,6 +95,13 @@ struct FileGridView: View {
                             Button("Add to Sidebar") {
                                 sidebar.addFavorite(url: item.url)
                             }
+                            Divider()
+                            Button("Open in Terminal") {
+                                guard let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return }
+                                NSWorkspace.shared.open([item.url], withApplicationAt: terminalURL,
+                                                        configuration: NSWorkspace.OpenConfiguration(),
+                                                        completionHandler: nil)
+                            }
                         }
                     }
                     .onDrag {
@@ -116,6 +123,13 @@ struct FileGridView: View {
                 browser.paste(into: navigation.currentURL)
             }
             .disabled(browser.clipboardItems.isEmpty)
+            Divider()
+            Button("Open in Terminal") {
+                guard let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return }
+                NSWorkspace.shared.open([navigation.currentURL], withApplicationAt: terminalURL,
+                                        configuration: NSWorkspace.OpenConfiguration(),
+                                        completionHandler: nil)
+            }
         }
     }
 

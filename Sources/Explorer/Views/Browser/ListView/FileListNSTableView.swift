@@ -23,6 +23,8 @@ struct FileListNSTableView: NSViewRepresentable {
     let onSetTags: (FileItem, [String]) -> Void
     // Sidebar
     var onAddToSidebar: ((URL) -> Void)?
+    // Current directory (for empty-space context menu)
+    var currentURL: URL
     // Drag & Drop
     let onMove: ([URL], URL) -> Void
     // Tags column
@@ -520,6 +522,10 @@ struct FileListNSTableView: NSViewRepresentable {
                 let pasteItem = menu.addItem(withTitle: "Paste", action: parent.hasPasteContent ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
                 pasteItem.target = self
                 if !parent.hasPasteContent { pasteItem.isEnabled = false }
+                menu.addItem(.separator())
+                let termItem = menu.addItem(withTitle: "Open in Terminal", action: #selector(menuOpenInTerminal(_:)), keyEquivalent: "")
+                termItem.representedObject = parent.currentURL
+                termItem.target = self
                 return
             }
 
@@ -583,6 +589,12 @@ struct FileListNSTableView: NSViewRepresentable {
                     .representedObject = item.url
             }
 
+            if item.isDirectory {
+                menu.addItem(.separator())
+                menu.addItem(withTitle: "Open in Terminal", action: #selector(menuOpenInTerminal(_:)), keyEquivalent: "")
+                    .representedObject = item.url
+            }
+
             for i in menu.items { i.target = self }
         }
 
@@ -625,6 +637,15 @@ struct FileListNSTableView: NSViewRepresentable {
         @objc func menuGetInfo(_ sender: NSMenuItem) {
             guard let url = sender.representedObject as? URL else { return }
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+
+        @objc func menuOpenInTerminal(_ sender: NSMenuItem) {
+            guard let url = sender.representedObject as? URL,
+                  let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
+            else { return }
+            NSWorkspace.shared.open([url], withApplicationAt: terminalURL,
+                                    configuration: NSWorkspace.OpenConfiguration(),
+                                    completionHandler: nil)
         }
 
         @objc func menuNewFolder(_ sender: NSMenuItem) {

@@ -34,6 +34,7 @@ struct FileListView: View {
             onCompress: { browser.compress(currentURL: navigation.currentURL) },
             onSetTags: { item, tags in browser.setTags(tags, for: item) },
             onAddToSidebar: { url in sidebar.addFavorite(url: url) },
+            currentURL: navigation.currentURL,
             onMove: { urls, destination in
                 Task {
                     do {
