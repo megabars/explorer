@@ -48,6 +48,23 @@ struct FileGridView: View {
                         Button("Open") {
                             browser.open(item, navigation: navigation)
                         }
+                        if !item.isDirectory && !item.isPackage {
+                            let apps = NSWorkspace.shared.urlsForApplications(toOpen: item.url)
+                            if !apps.isEmpty {
+                                let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: item.url)
+                                Menu("Open With") {
+                                    ForEach(apps, id: \.self) { appURL in
+                                        let name = (Bundle(url: appURL)?.infoDictionary?["CFBundleName"] as? String)
+                                                   ?? appURL.deletingPathExtension().lastPathComponent
+                                        Button(appURL == defaultApp ? "\(name) (default)" : name) {
+                                            NSWorkspace.shared.open([item.url], withApplicationAt: appURL,
+                                                                    configuration: NSWorkspace.OpenConfiguration(),
+                                                                    completionHandler: nil)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Divider()
                         Button("Cut") { browser.cut() }
                         Button("Copy") { browser.copy() }

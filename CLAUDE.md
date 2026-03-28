@@ -78,15 +78,19 @@ Tags are macOS Finder color tags stored via `NSURLTagNamesKey`. `FileSystemServi
 
 `BrowserViewModel.compress()` delegates to `FileSystemService.compress(_:in:)` which shells out to `/usr/bin/zip` via `Process` using `withCheckedThrowingContinuation` + `terminationHandler` (non-blocking — actor is free while zip runs); the archive is named `Archive.zip` (incrementing to `Archive 2.zip` etc. on conflict).
 
+### Non-persisted state
+`BrowserViewModel.viewMode` (list vs icon) and `showHidden` reset to `.list` / `false` on each launch — they are not saved to UserDefaults. Only `showTagsColumn` (key `"showTagsColumn"`) and sidebar favorites (key `"explorerFavorites"`) persist across launches.
+
 ### Packages and `suppressReload`
 `BrowserViewModel.open(_:navigation:)` checks `item.isPackage` — packages (`.app` bundles, etc.) are opened with `NSWorkspace.shared.open` rather than navigated into, same as regular files.
 
 `suppressReload: Bool` on `BrowserViewModel` prevents the `DirectoryWatcher` callback from triggering a redundant reload while `newFolder(in:)` is performing an explicit reload after directory creation. It is set synchronously on `@MainActor` before any `await` so the watcher callback (which also runs on `@MainActor`) cannot fire between the set and the reload.
 
 ### AppKit bridges
-- `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view; coordinator conforms to `NSTextFieldDelegate` for inline rename, `NSMenuDelegate` for context menu, `NSTableViewDataSource/Delegate` for drag & drop, and `NSTableViewDelegate` column-visibility methods (`userCanChangeVisibilityOf`/`userDidChangeVisibilityOf`) marked `nonisolated` with `MainActor.assumeIsolated` (AppKit always calls them on main thread but newer SDK drops `@preconcurrency`)
+- `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view; coordinator conforms to `NSTextFieldDelegate` for inline rename, `NSMenuDelegate` for context menu, `NSTableViewDataSource/Delegate` for drag & drop, and `NSTableViewDelegate` column-visibility methods (`userCanChangeVisibilityOf`/`userDidChangeVisibilityOf`) marked `nonisolated` with `MainActor.assumeIsolated` (AppKit always calls them on main thread but newer SDK drops `@preconcurrency`). Drag & drop: `pasteboardWriterForRow` writes the file URL path into an `NSPasteboardItem`; `validateDrop` allows `.on` only for directory rows (non-directory drops redirect to end-of-list); `acceptDrop` moves or copies via `BrowserViewModel.move/copy` depending on `draggingSourceOperationMask`.
 - `FocusedTextField` — `NSViewRepresentable` returning `TextFieldContainer` (NSView subclass that centers an NSTextField via `layout()`) for address bar editing
 - Right-click on empty space in list view shows "New Folder" + "Paste" + "Open in Terminal" via `menuNeedsUpdate` when `clickedRow < 0`; icon view shows the same via SwiftUI `.contextMenu` on the `ScrollView`. "Open in Terminal" uses `NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")` + `NSWorkspace.shared.open([url], withApplicationAt:)` — item context menu shows it only for directories, empty-space menu always shows it for the current directory. `FileListNSTableView` carries a `currentURL: URL` property for this purpose.
+- "Open With ▶" submenu appears after "Open" for non-directory, non-package files. Built via `NSWorkspace.shared.urlsForApplications(toOpen:)` (all apps) + `urlForApplication(toOpen:)` (default, marked "(default)"). List view uses NSMenu with `NSWorkspace.shared.icon(forFile:)` app icons; icon view uses SwiftUI `Menu("Open With")` with `ForEach`.
 
 ### .app bundle
 SPM builds a raw executable, not a `.app` bundle. `build_app.sh` wraps it:

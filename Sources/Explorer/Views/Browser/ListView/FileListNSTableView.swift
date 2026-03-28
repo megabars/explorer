@@ -538,6 +538,30 @@ struct FileListNSTableView: NSViewRepresentable {
 
             menu.addItem(withTitle: "Open", action: #selector(menuOpen(_:)), keyEquivalent: "")
                 .representedObject = item.url
+
+            // "Open With ▶" submenu — for files only (not directories/packages)
+            if !item.isDirectory && !item.isPackage {
+                let apps = NSWorkspace.shared.urlsForApplications(toOpen: item.url)
+                if !apps.isEmpty {
+                    let openWithItem = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
+                    let submenu = NSMenu(title: "Open With")
+                    let defaultAppURL = NSWorkspace.shared.urlForApplication(toOpen: item.url)
+                    for appURL in apps {
+                        let appName = (Bundle(url: appURL)?.infoDictionary?["CFBundleName"] as? String)
+                                      ?? appURL.deletingPathExtension().lastPathComponent
+                        let title = (appURL == defaultAppURL) ? "\(appName) (default)" : appName
+                        let mi = NSMenuItem(title: title, action: #selector(menuOpenWith(_:)), keyEquivalent: "")
+                        mi.representedObject = [item.url, appURL] as [URL]
+                        mi.target = self
+                        let icon = NSWorkspace.shared.icon(forFile: appURL.path)
+                        icon.size = NSSize(width: 16, height: 16)
+                        mi.image = icon
+                        submenu.addItem(mi)
+                    }
+                    openWithItem.submenu = submenu
+                    menu.addItem(openWithItem)
+                }
+            }
             menu.addItem(.separator())
 
             // Clipboard
@@ -637,6 +661,13 @@ struct FileListNSTableView: NSViewRepresentable {
         @objc func menuGetInfo(_ sender: NSMenuItem) {
             guard let url = sender.representedObject as? URL else { return }
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+
+        @objc func menuOpenWith(_ sender: NSMenuItem) {
+            guard let urls = sender.representedObject as? [URL], urls.count == 2 else { return }
+            NSWorkspace.shared.open([urls[0]], withApplicationAt: urls[1],
+                                    configuration: NSWorkspace.OpenConfiguration(),
+                                    completionHandler: nil)
         }
 
         @objc func menuOpenInTerminal(_ sender: NSMenuItem) {
