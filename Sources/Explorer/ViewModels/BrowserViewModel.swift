@@ -20,6 +20,19 @@ final class BrowserViewModel {
     var renamingItem: FileItem?
     var renameText: String = ""
 
+    // Sorting
+    enum SortKey: String {
+        case name, dateModified, size, kind
+    }
+    var sortKey: SortKey = .name
+    var sortAscending: Bool = true
+
+    // Search / filter
+    var searchQuery: String = ""
+
+    // Shift+Click anchor for range selection
+    var lastSelectedURL: URL?
+
     private var loadTask: Task<Void, Never>?
     private let watcher = DirectoryWatcher()
     private let fs = FileSystemService.shared
@@ -130,7 +143,7 @@ final class BrowserViewModel {
                 // Reload explicitly so the new folder appears in items before we rename
                 let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
                 items = loaded
-                if let newItem = items.first(where: { $0.url == newURL }) {
+                if let newItem = items.first(where: { $0.name == name && $0.isDirectory }) {
                     startRename(newItem)
                 } else {
                     errorMessage = "New folder was created but could not be located for renaming."
@@ -228,10 +241,71 @@ final class BrowserViewModel {
         renamingItem = nil
     }
 
+    func duplicate() {
+        let toDuplicate = selectedItems
+        guard !toDuplicate.isEmpty else { return }
+        Task {
+            do {
+                try await fs.duplicateItems(toDuplicate)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func setTags(_ tags: [String], for item: FileItem) {
+        Task {
+            do {
+                try await fs.setTags(tags, for: item.url)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func compress(currentURL: URL) {
+        let toCompress = selectedItems
+        guard !toCompress.isEmpty else { return }
+        Task {
+            do {
+                try await fs.compress(toCompress, in: currentURL)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     var selectedItems: [FileItem] {
         items.filter { selection.contains($0.url) }
+    }
+
+    /// Filtered and sorted view of items — use this in all views instead of `items` directly.
+    var sortedItems: [FileItem] {
+        let base: [FileItem]
+        if searchQuery.isEmpty {
+            base = items
+        } else {
+            base = items.filter { $0.name.localizedCaseInsensitiveContains(searchQuery) }
+        }
+        return base.sorted { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            let ascending: Bool
+            switch sortKey {
+            case .name:
+                ascending = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            case .dateModified:
+                let aDate = a.contentModificationDate ?? .distantPast
+                let bDate = b.contentModificationDate ?? .distantPast
+                ascending = aDate < bDate
+            case .size:
+                ascending = (a.fileSize ?? -1) < (b.fileSize ?? -1)
+            case .kind:
+                ascending = a.kind.localizedCaseInsensitiveCompare(b.kind) == .orderedAscending
+            }
+            return sortAscending ? ascending : !ascending
+        }
     }
 
 }

@@ -10,6 +10,25 @@ struct FileListNSTableView: NSViewRepresentable {
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
     let onTrash: (FileItem) -> Void
+    // Clipboard
+    let onCut: () -> Void
+    let onCopy: () -> Void
+    let onPaste: () -> Void
+    var hasPasteContent: Bool
+    // Duplicate
+    let onDuplicate: () -> Void
+    // Compress
+    let onCompress: () -> Void
+    // Tags
+    let onSetTags: (FileItem, [String]) -> Void
+    // Sidebar
+    var onAddToSidebar: ((URL) -> Void)?
+    // Drag & Drop
+    let onMove: ([URL], URL) -> Void
+    // Sorting
+    var sortKey: BrowserViewModel.SortKey
+    var sortAscending: Bool
+    let onSortChange: (BrowserViewModel.SortKey, Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -32,22 +51,26 @@ struct FileListNSTableView: NSViewRepresentable {
         nameCol.width = 300
         nameCol.minWidth = 80
         nameCol.resizingMask = .autoresizingMask
+        nameCol.sortDescriptorPrototype = NSSortDescriptor(key: "name", ascending: true)
 
         let dateCol = NSTableColumn(identifier: .init("date"))
         dateCol.title = "Date Modified"
         dateCol.width = 155
         dateCol.minWidth = 80
+        dateCol.sortDescriptorPrototype = NSSortDescriptor(key: "dateModified", ascending: false)
 
         let sizeCol = NSTableColumn(identifier: .init("size"))
         sizeCol.title = "Size"
         sizeCol.width = 75
         sizeCol.minWidth = 50
         sizeCol.headerCell.alignment = .right
+        sizeCol.sortDescriptorPrototype = NSSortDescriptor(key: "size", ascending: true)
 
         let kindCol = NSTableColumn(identifier: .init("kind"))
         kindCol.title = "Kind"
         kindCol.width = 130
         kindCol.minWidth = 60
+        kindCol.sortDescriptorPrototype = NSSortDescriptor(key: "kind", ascending: true)
 
         for col in [nameCol, dateCol, sizeCol, kindCol] { tableView.addTableColumn(col) }
 
@@ -61,6 +84,11 @@ struct FileListNSTableView: NSViewRepresentable {
         menu.delegate = context.coordinator
         tableView.menu = menu
 
+        // Drag & Drop
+        tableView.registerForDraggedTypes([.fileURL])
+        tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: false)
+        tableView.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
+
         context.coordinator.tableView = tableView
         scrollView.documentView = tableView
         tableView.sizeLastColumnToFit()
@@ -71,6 +99,21 @@ struct FileListNSTableView: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let tableView = nsView.documentView as? NSTableView else { return }
+
+        // Sync sort indicator arrow in column headers
+        let keyMap: [BrowserViewModel.SortKey: String] = [.name: "name", .dateModified: "dateModified", .size: "size", .kind: "kind"]
+        for col in tableView.tableColumns {
+            if col.sortDescriptorPrototype?.key == keyMap[sortKey] {
+                tableView.setIndicatorImage(
+                    NSImage(named: sortAscending ? "NSAscendingSortIndicator" : "NSDescendingSortIndicator"),
+                    in: col
+                )
+                tableView.highlightedTableColumn = col
+            } else {
+                tableView.setIndicatorImage(nil, in: col)
+            }
+        }
+
 
         // Reload only when item list actually changed — preserves scroll position.
         // Skip reloadData while rename is in progress to avoid destroying the editing cell.
@@ -294,13 +337,24 @@ struct FileListNSTableView: NSViewRepresentable {
                 c.textField = tf
                 c.addSubview(tf)
 
+                // Color-tag dots container (identifier "tagDots" for reuse lookup)
+                let dots = NSStackView()
+                dots.translatesAutoresizingMaskIntoConstraints = false
+                dots.orientation = .horizontal
+                dots.spacing = 3
+                dots.identifier = NSUserInterfaceItemIdentifier("tagDots")
+                c.addSubview(dots)
+
                 NSLayoutConstraint.activate([
                     img.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 2),
                     img.centerYAnchor.constraint(equalTo: c.centerYAnchor),
                     img.widthAnchor.constraint(equalToConstant: 16),
                     img.heightAnchor.constraint(equalToConstant: 16),
+                    dots.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -4),
+                    dots.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                    dots.widthAnchor.constraint(greaterThanOrEqualToConstant: 0),
                     tf.leadingAnchor.constraint(equalTo: img.trailingAnchor, constant: 5),
-                    tf.trailingAnchor.constraint(equalTo: c.trailingAnchor, constant: -2),
+                    tf.trailingAnchor.constraint(equalTo: dots.leadingAnchor, constant: -4),
                     tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
                 ])
                 return c
@@ -313,7 +367,38 @@ struct FileListNSTableView: NSViewRepresentable {
             if !(isRenaming && renamingRow == tableView.row(for: cell)) {
                 cell.textField?.stringValue = item.name
             }
+
+            // Update tag dots
+            if let dots = cell.subviews.first(where: { $0.identifier?.rawValue == "tagDots" }) as? NSStackView {
+                dots.arrangedSubviews.forEach { $0.removeFromSuperview() }
+                for tag in item.tags.prefix(5) {
+                    let dot = NSView()
+                    dot.wantsLayer = true
+                    dot.layer?.backgroundColor = tagNSColor(tag).cgColor
+                    dot.layer?.cornerRadius = 4
+                    dot.translatesAutoresizingMaskIntoConstraints = false
+                    NSLayoutConstraint.activate([
+                        dot.widthAnchor.constraint(equalToConstant: 8),
+                        dot.heightAnchor.constraint(equalToConstant: 8),
+                    ])
+                    dots.addArrangedSubview(dot)
+                }
+            }
+
             return cell
+        }
+
+        private func tagNSColor(_ tag: String) -> NSColor {
+            switch tag.lowercased() {
+            case "red":    return .systemRed
+            case "orange": return .systemOrange
+            case "yellow": return .systemYellow
+            case "green":  return .systemGreen
+            case "blue":   return .systemBlue
+            case "purple": return .systemPurple
+            case "gray", "grey": return .systemGray
+            default:       return .systemGray
+            }
         }
 
         private func labelCell(id: String, text: String, alignment: NSTextAlignment, in tableView: NSTableView) -> NSView {
@@ -336,6 +421,21 @@ struct FileListNSTableView: NSViewRepresentable {
             }()
             cell.textField?.stringValue = text
             return cell
+        }
+
+        // MARK: Sorting
+
+        func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+            guard let descriptor = tableView.sortDescriptors.first, let key = descriptor.key else { return }
+            let sortKey: BrowserViewModel.SortKey
+            switch key {
+            case "name": sortKey = .name
+            case "dateModified": sortKey = .dateModified
+            case "size": sortKey = .size
+            case "kind": sortKey = .kind
+            default: return
+            }
+            parent.onSortChange(sortKey, descriptor.ascending)
         }
 
         // MARK: Selection
@@ -366,19 +466,77 @@ struct FileListNSTableView: NSViewRepresentable {
             let row = tv.clickedRow
             // Snapshot to avoid index-out-of-bounds if items mutates between bounds check and access
             let snapshot = parent.items
-            guard row >= 0, row < snapshot.count else { return }
+
+            // Right-click on empty space — show background context menu
+            guard row >= 0, row < snapshot.count else {
+                menu.addItem(withTitle: "New Folder", action: #selector(menuNewFolder(_:)), keyEquivalent: "")
+                    .target = self
+                menu.addItem(.separator())
+                let pasteItem = menu.addItem(withTitle: "Paste", action: parent.hasPasteContent ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
+                pasteItem.target = self
+                if !parent.hasPasteContent { pasteItem.isEnabled = false }
+                return
+            }
+
             let item = snapshot[row]
+
+            // If the right-clicked item is not already selected, select it exclusively
+            if !parent.selection.contains(item.url) {
+                parent.selection = [item.url]
+            }
 
             menu.addItem(withTitle: "Open", action: #selector(menuOpen(_:)), keyEquivalent: "")
                 .representedObject = item.url
             menu.addItem(.separator())
+
+            // Clipboard
+            menu.addItem(withTitle: "Cut", action: #selector(menuCut(_:)), keyEquivalent: "")
+                .representedObject = item.url
+            menu.addItem(withTitle: "Copy", action: #selector(menuCopy(_:)), keyEquivalent: "")
+                .representedObject = item.url
+            let pasteItem = menu.addItem(withTitle: "Paste", action: parent.hasPasteContent ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
+            pasteItem.representedObject = item.url
+            if !parent.hasPasteContent { pasteItem.isEnabled = false }
+            menu.addItem(.separator())
+
+            menu.addItem(withTitle: "Duplicate", action: #selector(menuDuplicate(_:)), keyEquivalent: "")
+                .representedObject = item.url
+            menu.addItem(withTitle: "Compress...", action: #selector(menuCompress(_:)), keyEquivalent: "")
+                .representedObject = item.url
+            menu.addItem(.separator())
+
             menu.addItem(withTitle: "Rename", action: #selector(menuRename(_:)), keyEquivalent: "")
                 .representedObject = item.url
             menu.addItem(.separator())
+
             menu.addItem(withTitle: "Move to Trash", action: #selector(menuTrash(_:)), keyEquivalent: "")
                 .representedObject = item.url
             menu.addItem(withTitle: "Get Info", action: #selector(menuGetInfo(_:)), keyEquivalent: "")
                 .representedObject = item.url
+
+            // Tags submenu
+            let tagsMenu = NSMenu()
+            for tagName in ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray"] {
+                let tagItem = NSMenuItem(title: tagName, action: #selector(menuToggleTag(_:)), keyEquivalent: "")
+                tagItem.representedObject = [item.url, tagName, item] as [Any]
+                tagItem.state = item.tags.contains(tagName) ? .on : .off
+                tagItem.target = self
+                tagsMenu.addItem(tagItem)
+            }
+            tagsMenu.addItem(.separator())
+            let clearTagItem = NSMenuItem(title: "None", action: #selector(menuClearTags(_:)), keyEquivalent: "")
+            clearTagItem.representedObject = [item.url, item] as [Any]
+            clearTagItem.target = self
+            tagsMenu.addItem(clearTagItem)
+            let tagsMenuItem = NSMenuItem(title: "Tags", action: nil, keyEquivalent: "")
+            tagsMenuItem.submenu = tagsMenu
+            menu.addItem(tagsMenuItem)
+
+            if item.isDirectory, parent.onAddToSidebar != nil {
+                menu.addItem(.separator())
+                menu.addItem(withTitle: "Add to Sidebar", action: #selector(menuAddToSidebar(_:)), keyEquivalent: "")
+                    .representedObject = item.url
+            }
 
             for i in menu.items { i.target = self }
         }
@@ -422,6 +580,100 @@ struct FileListNSTableView: NSViewRepresentable {
         @objc func menuGetInfo(_ sender: NSMenuItem) {
             guard let url = sender.representedObject as? URL else { return }
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+
+        @objc func menuNewFolder(_ sender: NSMenuItem) {
+            NotificationCenter.default.post(name: .newFolderRequested, object: nil)
+        }
+
+        @objc func menuCut(_ sender: NSMenuItem) {
+            parent.onCut()
+        }
+
+        @objc func menuCopy(_ sender: NSMenuItem) {
+            parent.onCopy()
+        }
+
+        @objc func menuPaste(_ sender: NSMenuItem) {
+            parent.onPaste()
+        }
+
+        @objc func menuDuplicate(_ sender: NSMenuItem) {
+            parent.onDuplicate()
+        }
+
+        @objc func menuCompress(_ sender: NSMenuItem) {
+            parent.onCompress()
+        }
+
+        @objc func menuAddToSidebar(_ sender: NSMenuItem) {
+            guard let url = sender.representedObject as? URL else { return }
+            parent.onAddToSidebar?(url)
+        }
+
+        @objc func menuToggleTag(_ sender: NSMenuItem) {
+            guard let obj = sender.representedObject as? [Any],
+                  let item = obj[2] as? FileItem,
+                  let tagName = obj[1] as? String else { return }
+            var tags = item.tags
+            if tags.contains(tagName) {
+                tags.removeAll { $0 == tagName }
+            } else {
+                tags.append(tagName)
+            }
+            parent.onSetTags(item, tags)
+        }
+
+        @objc func menuClearTags(_ sender: NSMenuItem) {
+            guard let obj = sender.representedObject as? [Any],
+                  let item = obj[1] as? FileItem else { return }
+            parent.onSetTags(item, [])
+        }
+
+        // MARK: Drag Source
+
+        func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
+            let snapshot = parent.items
+            guard row < snapshot.count else { return nil }
+            let item = snapshot[row]
+            let pbItem = NSPasteboardItem()
+            pbItem.setString(item.url.absoluteString, forType: .fileURL)
+            return pbItem
+        }
+
+        // MARK: Drop Destination
+
+        func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
+            let snapshot = parent.items
+            // If dropping onto a directory row, allow it; otherwise redirect to end of list
+            if dropOperation == .on, row >= 0, row < snapshot.count, snapshot[row].isDirectory {
+                return info.draggingSourceOperationMask.contains(.move) ? .move : .copy
+            }
+            // Disallow drop onto non-directory rows; redirect to .above (end of list)
+            tableView.setDropRow(-1, dropOperation: .on)
+            return info.draggingSourceOperationMask.contains(.move) ? .move : .copy
+        }
+
+        func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
+            let snapshot = parent.items
+            let destination: URL
+            if dropOperation == .on, row >= 0, row < snapshot.count, snapshot[row].isDirectory {
+                destination = snapshot[row].url
+            } else {
+                // Drop onto background — move into the current directory (no-op move but handled by caller)
+                return false
+            }
+
+            var urls: [URL] = []
+            info.enumerateDraggingItems(options: [], for: tableView, classes: [NSPasteboardItem.self], searchOptions: [:]) { draggingItem, _, _ in
+                guard let pbItem = draggingItem.item as? NSPasteboardItem,
+                      let str = pbItem.string(forType: .fileURL),
+                      let url = URL(string: str) else { return }
+                urls.append(url)
+            }
+            guard !urls.isEmpty else { return false }
+            parent.onMove(urls, destination)
+            return true
         }
     }
 }

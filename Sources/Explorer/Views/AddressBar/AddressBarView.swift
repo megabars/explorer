@@ -24,21 +24,35 @@ struct AddressBarView: View {
     // MARK: - Token (idle) view
 
     private var tokenView: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                let components = navigation.currentURL.pathComponentURLs
-                ForEach(Array(components.enumerated()), id: \.element) { index, url in
-                    PathTokenView(
-                        url: url,
-                        isLast: index == components.count - 1
-                    ) { tapped in
-                        navigation.navigate(to: tapped)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    let components = navigation.currentURL.pathComponentURLs
+                    ForEach(Array(components.enumerated()), id: \.element) { index, url in
+                        PathTokenView(
+                            url: url,
+                            isLast: index == components.count - 1
+                        ) { tapped in
+                            navigation.navigate(to: tapped)
+                        }
+                        .id(index == components.count - 1 ? "last" : url.path)
                     }
                 }
+                .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
+            // clipped() prevents the ScrollView's content size from leaking into the toolbar
+            // item measurement, which would cause NSToolbar to push items into >> overflow.
+            .clipped()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onChange(of: navigation.currentURL) { _, _ in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo("last", anchor: .trailing)
+                }
+            }
+            .onAppear {
+                proxy.scrollTo("last", anchor: .trailing)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         // Tap on the non-button area → enter edit mode
         .simultaneousGesture(
             TapGesture().onEnded {

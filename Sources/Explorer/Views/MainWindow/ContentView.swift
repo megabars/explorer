@@ -5,15 +5,31 @@ struct ContentView: View {
     @State private var browser = BrowserViewModel()
     @State private var sidebar = SidebarViewModel()
     @State private var addressBar = AddressBarViewModel()
+    @State private var isSearching = false
 
     private let fsService = FileSystemService.shared
 
     var body: some View {
+        mainLayout
+            .withKeyboardShortcuts(browser: browser, navigation: navigation, addressBar: addressBar, isSearching: $isSearching)
+            .withNotificationHandlers(browser: browser, navigation: navigation, isSearching: $isSearching)
+    }
+
+    private var mainLayout: some View {
         NavigationSplitView {
             SidebarView(vm: sidebar, navigation: navigation)
         } detail: {
-            BrowserContainerView(browser: browser, navigation: navigation)
-                .navigationTitle(navigation.currentURL.lastPathComponent)
+            VStack(spacing: 0) {
+                if isSearching {
+                    SearchBarView(query: $browser.searchQuery) {
+                        browser.searchQuery = ""
+                        isSearching = false
+                    }
+                    Divider()
+                }
+                BrowserContainerView(browser: browser, navigation: navigation, sidebar: sidebar)
+                    .navigationTitle(navigation.currentURL.lastPathComponent)
+            }
         }
         .toolbar {
             ExplorerToolbar(
@@ -25,44 +41,7 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 800, minHeight: 500)
-        // Cmd+L — focus address bar
-        .onKeyPress(.init("l"), phases: .down) { event in
-            guard event.modifiers.contains(.command) else { return .ignored }
-            addressBar.beginEditing(from: navigation.currentURL)
-            return .handled
-        }
-        // Cmd+Shift+N — new folder
-        .onKeyPress(.init("n"), phases: .down) { event in
-            guard event.modifiers.contains([.command, .shift]) else { return .ignored }
-            browser.newFolder(in: navigation.currentURL)
-            return .handled
-        }
-        // Cmd+Delete — move to trash
-        .onKeyPress(.delete, phases: .down) { event in
-            guard event.modifiers.contains(.command) else { return .ignored }
-            browser.trash(navigation: navigation)
-            return .handled
-        }
-        // Return — start rename on the single selected item
-        .onKeyPress(.return, phases: .down) { event in
-            guard event.modifiers.isEmpty else { return .ignored }
-            guard browser.renamingItem == nil,
-                  browser.selection.count == 1,
-                  let item = browser.selectedItems.first else { return .ignored }
-            browser.startRename(item)
-            return .handled
-        }
-        // Status bar
-        .safeAreaInset(edge: .bottom) {
-            statusBar
-        }
-        // Rename requested from context menu (list or grid view)
-        .onReceive(NotificationCenter.default.publisher(for: .renameRequestedForURL)) { note in
-            guard let url = note.userInfo?["url"] as? URL,
-                  let item = browser.items.first(where: { $0.url == url }) else { return }
-            browser.startRename(item)
-        }
-        // Error alert
+        .safeAreaInset(edge: .bottom) { statusBar }
         .alert("Error", isPresented: Binding(
             get: { browser.errorMessage != nil },
             set: { if !$0 { browser.errorMessage = nil } }
@@ -86,11 +65,92 @@ struct ContentView: View {
     }
 
     private var statusText: String {
-        let total = browser.items.count
+        let total = browser.sortedItems.count
         let selected = browser.selection.count
         if selected > 0 {
             return "\(selected) of \(total) selected"
         }
+        if !browser.searchQuery.isEmpty {
+            return "\(total) result\(total == 1 ? "" : "s")"
+        }
         return "\(total) item\(total == 1 ? "" : "s")"
+    }
+}
+
+// MARK: - View modifiers extracted to reduce type-checker load
+
+private extension View {
+    func withKeyboardShortcuts(
+        browser: BrowserViewModel,
+        navigation: NavigationState,
+        addressBar: AddressBarViewModel,
+        isSearching: Binding<Bool>
+    ) -> some View {
+        self
+            .onKeyPress(.init("l"), phases: .down) { event in
+                guard event.modifiers.contains(.command) else { return .ignored }
+                addressBar.beginEditing(from: navigation.currentURL)
+                return .handled
+            }
+            .onKeyPress(.init("n"), phases: .down) { event in
+                guard event.modifiers.contains([.command, .shift]) else { return .ignored }
+                browser.newFolder(in: navigation.currentURL)
+                return .handled
+            }
+            .onKeyPress(.delete, phases: .down) { event in
+                guard event.modifiers.contains(.command) else { return .ignored }
+                browser.trash(navigation: navigation)
+                return .handled
+            }
+            .onKeyPress(.return, phases: .down) { event in
+                guard event.modifiers.isEmpty else { return .ignored }
+                guard browser.renamingItem == nil,
+                      browser.selection.count == 1,
+                      let item = browser.selectedItems.first else { return .ignored }
+                browser.startRename(item)
+                return .handled
+            }
+            .onKeyPress(.escape, phases: .down) { event in
+                guard isSearching.wrappedValue else { return .ignored }
+                browser.searchQuery = ""
+                isSearching.wrappedValue = false
+                return .handled
+            }
+    }
+
+    func withNotificationHandlers(
+        browser: BrowserViewModel,
+        navigation: NavigationState,
+        isSearching: Binding<Bool>
+    ) -> some View {
+        self
+            .onReceive(NotificationCenter.default.publisher(for: .newFolderRequested)) { _ in
+                browser.newFolder(in: navigation.currentURL)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .cutRequested)) { _ in
+                browser.cut()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .copyRequested)) { _ in
+                browser.copy()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .pasteRequested)) { _ in
+                browser.paste(into: navigation.currentURL)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .duplicateRequested)) { _ in
+                browser.duplicate()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .filterRequested)) { _ in
+                if isSearching.wrappedValue {
+                    browser.searchQuery = ""
+                    isSearching.wrappedValue = false
+                } else {
+                    isSearching.wrappedValue = true
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .renameRequestedForURL)) { note in
+                guard let url = note.userInfo?["url"] as? URL,
+                      let item = browser.items.first(where: { $0.url == url }) else { return }
+                browser.startRename(item)
+            }
     }
 }

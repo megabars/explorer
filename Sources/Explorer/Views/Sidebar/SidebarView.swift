@@ -42,5 +42,10 @@ struct SidebarView: View {
         .foregroundStyle(navigation.currentURL == item.url ? .blue : (available ? .primary : .secondary))
         .opacity(available ? 1.0 : 0.5)
         .help(available ? "" : "\(item.name) is not available")
+        .contextMenu(item.section == .favorites ? ContextMenu {
+            Button("Remove from Sidebar", role: .destructive) {
+                vm.removeFavorite(id: item.id)
+            }
+        } : nil)
     }
 }

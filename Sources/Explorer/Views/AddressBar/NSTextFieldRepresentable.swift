@@ -1,6 +1,35 @@
 import SwiftUI
 import AppKit
 
+/// Container that centers the NSTextField vertically on every layout pass.
+class TextFieldContainer: NSView {
+    let textField = NSTextField()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        textField.isBordered = false
+        textField.isBezeled = false
+        textField.backgroundColor = .clear
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.usesSingleLineMode = true
+        textField.lineBreakMode = .byClipping
+        textField.cell?.wraps = false
+        textField.cell?.isScrollable = true
+        textField.font = .systemFont(ofSize: NSFont.systemFontSize)
+        addSubview(textField)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let h = textField.fittingSize.height
+        let y = (bounds.height - h) / 2
+        textField.frame = NSRect(x: 0, y: y, width: bounds.width, height: h)
+    }
+}
+
 /// Wraps NSTextField to give full control over first-responder, Tab completion,
 /// and Return/Escape key handling — things SwiftUI's TextField cannot do.
 struct FocusedTextField: NSViewRepresentable {
@@ -12,32 +41,25 @@ struct FocusedTextField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField()
+    func makeNSView(context: Context) -> TextFieldContainer {
+        let container = TextFieldContainer()
+        let field = container.textField
         field.placeholderString = placeholder
         field.delegate = context.coordinator
-        field.isBordered = false
-        field.isBezeled = false
-        field.backgroundColor = .clear
-        field.drawsBackground = false
-        field.focusRingType = .none
-        field.font = .systemFont(ofSize: NSFont.systemFontSize)
         context.coordinator.field = field
-        return field
+        return container
     }
 
-    func updateNSView(_ nsView: NSTextField, context: Context) {
-        if nsView.stringValue != text {
-            nsView.stringValue = text
+    func updateNSView(_ container: TextFieldContainer, context: Context) {
+        let field = container.textField
+        if field.stringValue != text {
+            field.stringValue = text
         }
-        // Become first responder only once when the view first appears
         guard !context.coordinator.didBecomeFirstResponder else { return }
         context.coordinator.didBecomeFirstResponder = true
         DispatchQueue.main.async {
-            // Guard against the view being removed from the hierarchy before the
-            // async block executes (e.g. address bar dismissed very quickly).
-            guard nsView.superview != nil, let window = nsView.window else { return }
-            window.makeFirstResponder(nsView)
+            guard field.superview != nil, let window = field.window else { return }
+            window.makeFirstResponder(field)
         }
     }
 
@@ -53,19 +75,16 @@ struct FocusedTextField: NSViewRepresentable {
 
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
-            // Strip control characters (U+0000–U+001F, U+007F) to prevent injection via paste
             let raw = field.stringValue
-            let value = raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
+            let value = raw.unicodeScalars
+                .filter { !CharacterSet.controlCharacters.contains($0) }
                 .reduce(into: "") { $0.append(Character($1)) }
-            if value != raw {
-                field.stringValue = value
-            }
+            if value != raw { field.stringValue = value }
             parent.text = value
             parent.onTextChange(value)
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {
-            // Reset so that makeFirstResponder fires again the next time the address bar opens.
             didBecomeFirstResponder = false
             parent.onCancel()
         }

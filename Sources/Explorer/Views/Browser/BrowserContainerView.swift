@@ -3,6 +3,7 @@ import SwiftUI
 struct BrowserContainerView: View {
     @Bindable var browser: BrowserViewModel
     let navigation: NavigationState
+    let sidebar: SidebarViewModel
 
     var body: some View {
         ZStack {
@@ -11,7 +12,7 @@ struct BrowserContainerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = browser.errorMessage {
                 errorView(message: error)
-            } else if browser.items.isEmpty {
+            } else if browser.sortedItems.isEmpty {
                 emptyView
             } else {
                 contentView
@@ -35,9 +36,9 @@ struct BrowserContainerView: View {
     private var contentView: some View {
         switch browser.viewMode {
         case .list:
-            FileListView(browser: browser, navigation: navigation)
+            FileListView(browser: browser, navigation: navigation, sidebar: sidebar)
         case .icons:
-            FileGridView(browser: browser, navigation: navigation)
+            FileGridView(browser: browser, navigation: navigation, sidebar: sidebar)
         }
     }
 

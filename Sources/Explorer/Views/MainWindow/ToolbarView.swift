@@ -34,7 +34,9 @@ struct ExplorerToolbar: ToolbarContent {
             .help("Go Up")
         }
 
-        // Address bar — stretches to fill available space
+        // Address bar — stretches to fill available space.
+        // minWidth is kept small so NSToolbar never moves it to the >> overflow menu;
+        // the inner ScrollView handles long paths by scrolling horizontally.
         ToolbarItem(placement: .principal) {
             AddressBarView(
                 vm: addressBar,
@@ -42,7 +44,7 @@ struct ExplorerToolbar: ToolbarContent {
                 fsService: fsService,
                 showHidden: browser.showHidden
             )
-            .frame(minWidth: 500, maxWidth: .infinity)
+            .frame(minWidth: 120, idealWidth: 480, maxWidth: .infinity)
         }
 
         // View mode picker + controls on the right

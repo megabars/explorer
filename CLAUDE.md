@@ -22,7 +22,7 @@ pkill -9 Explorer
 Swift 6 strict concurrency (`swiftLanguageMode(.v6)`), macOS 14+, SPM executable target.
 
 ### Concurrency model
-- `FileSystemService` — `actor`, all `FileManager` calls isolated here. Key methods: `listDirectory`, `completions(for:showHidden:)`, `isReadable(at:)`, `volumeName(for:)`, `exists(at:)`, `itemStatus(at:)`. Never call `FileManager` directly on `@MainActor` — use this actor instead.
+- `FileSystemService` — `actor`, all `FileManager` calls isolated here. Key methods: `listDirectory`, `completions(for:showHidden:)`, `isReadable(at:)`, `volumeName(for:)`, `exists(at:)`, `itemStatus(at:)`, `rename(at:to:)`, `copy(at:to:)`, `createDirectory(at:)`. Never call `FileManager` directly on `@MainActor` — use this actor instead.
 - `BrowserViewModel`, `SidebarViewModel`, `AddressBarViewModel` — `@Observable @MainActor`
 - `NavigationState` — `@Observable @MainActor`, owns back/forward stack (no history list)
 - `DirectoryWatcher` — `@unchecked Sendable` class wrapping `DispatchSource.makeFileSystemObjectSource`, delivers events debounced (250 ms) via `DispatchWorkItem` on the main queue → `Task { @MainActor in … }`
@@ -34,8 +34,13 @@ Swift 6 strict concurrency (`swiftLanguageMode(.v6)`), macOS 14+, SPM executable
 All view-model instances are created in `ContentView` as `@State` and passed down by reference — there is no environment injection.
 
 ### Cross-component communication
-- `Notification.Name.newFolderRequested` — posted by the SwiftUI menu command, observed in `BrowserViewModel.newFolder(in:)` via `ContentView`.
-- `Notification.Name.renameRequestedForURL` — posted by the NSTableView context menu (`menuRename`), observed in `ContentView` to call `browser.startRename(_:)`.
+All clipboard and file-management commands flow through `NotificationCenter` because AppKit's responder chain intercepts `Cmd+C/V/X` before SwiftUI `onKeyPress` reaches them. `ExplorerApp` overrides these via `CommandGroup(replacing:)` which posts notifications; `ContentView` observes them via `.onReceive`.
+
+Notification names defined in `ExplorerApp.swift`:
+- `.newFolderRequested` — New Folder (Cmd+Shift+N)
+- `.renameRequestedForURL` — rename a specific URL (from NSTableView context menu)
+- `.cutRequested` / `.copyRequested` / `.pasteRequested` / `.duplicateRequested` — clipboard ops
+- `.filterRequested` — toggle search bar (Cmd+F)
 
 ### Rename flow
 Inline rename in the list view is handled entirely in `FileListNSTableView`:
@@ -47,19 +52,26 @@ Inline rename in the list view is handled entirely in `FileListNSTableView`:
 
 The same rename flow is triggered from icon view via the `.contextMenu` "Rename" item, which posts `renameRequestedForURL`.
 
+### Sorting and filtering
+`BrowserViewModel` exposes `sortKey: SortKey` and `sortAscending: Bool`. The `sortedItems: [FileItem]` computed property filters by `searchQuery` (case-insensitive) then sorts — directories always first. `FileListNSTableView` sets `NSSortDescriptor` prototypes on each column and updates the sort state via `tableView(_:sortDescriptorsDidChange:)`.
+
 ### Sidebar
-`SidebarViewModel` holds a static `favorites` list (`SidebarItem.defaults`) and delegates to `VolumeService.shared` for mounted volumes. Favorite availability is checked asynchronously via `refreshFavoriteAvailability()` (called from `.task` in `SidebarView`) to avoid blocking the main thread with `fileExists`.
+`SidebarViewModel` persists favorites to `UserDefaults` as `[String]` (URL paths) under key `"explorerFavorites"`. On init it loads from UserDefaults, falling back to `SidebarItem.defaults`. `addFavorite(url:)` and `removeFavorite(id:)` mutate and immediately save. Volumes come from `VolumeService.shared`. Favorite availability is checked asynchronously via `refreshFavoriteAvailability()` (called from `.task` in `SidebarView`) to avoid blocking the main thread with `fileExists`.
 
 ### Address bar
 Two states controlled by `AddressBarViewModel.isEditing`:
-- **Idle** — `PathTokenView` breadcrumbs built from `URL.pathComponentURLs` (uses `url.pathComponents` string array — never call `deletingLastPathComponent()` in a loop, it caused a 30 GB memory hang). Volume name is resolved asynchronously via `.task(id: url)` using `FileSystemService.volumeName(for:)`.
-- **Editing** — `FocusedTextField` (`NSTextField` via `NSViewRepresentable`) activated on click or `Cmd+L`; exits on Enter, Escape, or focus loss (`controlTextDidEndEditing`). Completions respect `browser.showHidden` (passed through `AddressBarView` → `AddressBarViewModel.textDidChange(_:service:showHidden:)`).
+- **Idle** — `PathTokenView` breadcrumbs in a horizontal `ScrollView` with `ScrollViewReader`; auto-scrolls to the last component on navigation so the current folder is always visible. Never call `deletingLastPathComponent()` in a loop — use `url.pathComponents` string array (loop caused a 30 GB memory hang). Volume name resolved asynchronously via `.task(id: url)`.
+- **Editing** — `FocusedTextField` (`NSViewRepresentable` returning `TextFieldContainer`) activated on click or `Cmd+L`. `TextFieldContainer` is an `NSView` subclass that centers the `NSTextField` vertically via `layout()`. The field uses `cell.isScrollable = true` for horizontal scrolling of long paths. Exits on Enter, Escape, or focus loss.
 
-`AddressBarView` has no custom background — the system toolbar capsule (macOS 14+) provides the visual container. `FocusedTextField` is borderless/transparent so it blends into that capsule.
+`AddressBarView` has no custom background — the system toolbar capsule provides the visual container. The toolbar item uses `minWidth: 120` (not 500) so NSToolbar never pushes it to the `>>` overflow menu when paths are long.
+
+### Clipboard
+`BrowserViewModel` manages cut/copy/paste via `NSPasteboard`. Cut items are tracked in `cutItems: Set<URL>`; pasting resolves conflicts (duplicate filenames get a numeric suffix). All clipboard commands flow through `NotificationCenter` (see Cross-component communication).
 
 ### AppKit bridges
-- `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view; coordinator conforms to `NSTextFieldDelegate` for inline rename
-- `FocusedTextField` — `NSViewRepresentable` wrapping `NSTextField` for address bar editing
+- `FileListNSTableView` — `NSViewRepresentable` wrapping `NSTableView` for the list view; coordinator conforms to `NSTextFieldDelegate` for inline rename, `NSMenuDelegate` for context menu, and `NSTableViewDataSource/Delegate` for drag & drop
+- `FocusedTextField` — `NSViewRepresentable` returning `TextFieldContainer` (NSView subclass that centers an NSTextField via `layout()`) for address bar editing
+- Right-click on empty space in list view shows "New Folder" + "Paste" via `menuNeedsUpdate` when `clickedRow < 0`; icon view shows the same via SwiftUI `.contextMenu` on the `ScrollView`
 
 ### .app bundle
 SPM builds a raw executable, not a `.app` bundle. `build_app.sh` wraps it:
@@ -68,3 +80,7 @@ Explorer.app/Contents/MacOS/Explorer   ← binary
 Explorer.app/Contents/Info.plist       ← from Sources/Explorer/Resources/Info.plist
 ```
 Without this, `NSApplication` does not get foreground activation policy and the window never appears.
+
+## Tests
+
+No test targets exist. The project has no automated tests.

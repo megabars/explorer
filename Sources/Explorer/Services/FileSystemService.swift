@@ -145,4 +145,87 @@ actor FileSystemService {
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         return (exists, exists && isDir.boolValue)
     }
+
+    /// Copies each item to the same directory with a " copy" suffix, incrementing on conflict.
+    func duplicateItems(_ items: [FileItem]) throws {
+        for item in items {
+            let base = (item.name as NSString).deletingPathExtension
+            let ext = (item.name as NSString).pathExtension
+            let copyName = ext.isEmpty ? "\(base) copy" : "\(base) copy.\(ext)"
+            var candidate = item.url.deletingLastPathComponent().appendingPathComponent(copyName)
+            var counter = 2
+            while true {
+                do {
+                    try FileManager.default.copyItem(at: item.url, to: candidate)
+                    break
+                } catch let error as NSError
+                    where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                    guard counter <= 1000 else { throw error }
+                    let numberedName = ext.isEmpty ? "\(base) copy \(counter)" : "\(base) copy \(counter).\(ext)"
+                    candidate = item.url.deletingLastPathComponent().appendingPathComponent(numberedName)
+                    counter += 1
+                }
+            }
+        }
+    }
+
+    /// Sets macOS Finder color tags on a file.
+    func setTags(_ tags: [String], for url: URL) throws {
+        try (url as NSURL).setResourceValue(tags as NSArray, forKey: .tagNamesKey)
+    }
+
+    /// Moves files to a destination directory, resolving name conflicts with a counter suffix.
+    func move(from sources: [URL], to destination: URL) throws {
+        for source in sources {
+            let name = source.lastPathComponent
+            let base = (name as NSString).deletingPathExtension
+            let ext = (name as NSString).pathExtension
+            var candidate = destination.appendingPathComponent(name)
+            var counter = 2
+            while true {
+                if !FileManager.default.fileExists(atPath: candidate.path) {
+                    try FileManager.default.moveItem(at: source, to: candidate)
+                    break
+                }
+                let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+                candidate = destination.appendingPathComponent(newName)
+                counter += 1
+                guard counter <= 1000 else {
+                    throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteFileExistsError,
+                                  userInfo: [NSLocalizedDescriptionKey: "Could not move \"\(name)\": too many conflicts."])
+                }
+            }
+        }
+    }
+
+    /// Compresses the given items into an Archive.zip (or Archive N.zip) in the given directory.
+    func compress(_ items: [FileItem], in directory: URL) throws {
+        var archiveName = "Archive"
+        var archiveURL = directory.appendingPathComponent("\(archiveName).zip")
+        var counter = 2
+        while FileManager.default.fileExists(atPath: archiveURL.path) {
+            archiveName = "Archive \(counter)"
+            archiveURL = directory.appendingPathComponent("\(archiveName).zip")
+            counter += 1
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.currentDirectoryURL = directory
+        var args = ["-r", archiveURL.path]
+        args += items.map { $0.url.lastPathComponent }
+        process.arguments = args
+
+        let pipe = Pipe()
+        process.standardError = pipe
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            let errData = pipe.fileHandleForReading.readDataToEndOfFile()
+            let msg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
+            throw NSError(domain: "zip", code: Int(process.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+    }
 }
