@@ -1,27 +1,38 @@
 import AppKit
 
+/// Result of a trash operation.
+struct TrashResult {
+    /// Maps each successfully trashed original URL to its Trash URL.
+    let mapping: [URL: URL]
+    /// Human-readable error messages for items that could not be trashed.
+    let failures: [String]
+}
+
 @MainActor
 final class TrashService {
     static let shared = TrashService()
 
-    /// Moves items to Trash and returns a mapping from original URL to Trash URL.
+    /// Moves items to Trash and returns a TrashResult with the mapping and any per-item failures.
+    /// Never throws — errors are reported via TrashResult.failures so callers can set undo state
+    /// even when only a subset of items was successfully trashed.
     @discardableResult
-    func trash(items: [FileItem]) async throws -> [URL: URL] {
+    func trash(items: [FileItem]) async -> TrashResult {
         let urls = items.map(\.url)
-        // recycle() throws a single error if any item fails; on partial failure we get one combined error
-        // from NSWorkspace. Collect individual failures for a more informative message.
         do {
             let result = try await NSWorkspace.shared.recycle(urls)
-            return result
+            return TrashResult(mapping: result, failures: [])
         } catch {
-            // If multiple items were requested, attempt them individually to collect all errors
-            guard urls.count > 1 else { throw error }
+            // Batch call failed. If there was only one item, report it directly.
+            guard urls.count > 1 else {
+                return TrashResult(mapping: [:], failures: ["\(items[0].name): \(error.localizedDescription)"])
+            }
+            // Retry individually to separate successes from failures so the caller can
+            // set undo state for successfully trashed items even when some fail.
             var failures: [String] = []
             var combinedResult: [URL: URL] = [:]
             for (item, url) in zip(items, urls) {
                 // Skip files that no longer exist — they may have been successfully
                 // moved by the batch call before it reported a partial failure.
-                // Use the FileSystemService actor to avoid blocking @MainActor.
                 guard await FileSystemService.shared.exists(at: url) else { continue }
                 do {
                     let result = try await NSWorkspace.shared.recycle([url])
@@ -30,15 +41,7 @@ final class TrashService {
                     failures.append("\(item.name): \(itemError.localizedDescription)")
                 }
             }
-            if !failures.isEmpty {
-                let combined = failures.joined(separator: "\n")
-                throw NSError(
-                    domain: "TrashService",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to move to Trash:\n\(combined)"]
-                )
-            }
-            return combinedResult
+            return TrashResult(mapping: combinedResult, failures: failures)
         }
     }
 }

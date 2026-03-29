@@ -13,7 +13,11 @@ struct BrowserContainerView: View {
             } else if let error = browser.loadError {
                 errorView(message: error)
             } else if browser.sortedItems.isEmpty {
-                emptyView
+                if browser.searchQuery.isEmpty {
+                    emptyView
+                } else {
+                    noResultsView
+                }
             } else {
                 contentView
             }
@@ -40,6 +44,18 @@ struct BrowserContainerView: View {
         case .icons:
             FileGridView(browser: browser, navigation: navigation, sidebar: sidebar)
         }
+    }
+
+    private var noResultsView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+            Text("No Results")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var emptyView: some View {

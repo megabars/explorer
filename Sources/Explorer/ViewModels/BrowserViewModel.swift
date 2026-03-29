@@ -144,20 +144,19 @@ final class BrowserViewModel {
     func trash(items: [FileItem]) {
         guard !items.isEmpty else { return }
         Task {
-            do {
-                let mapping = try await TrashService.shared.trash(items: items)
-                // Build pairs so each original is matched with its actual trashed URL.
-                // compactMap drops items that were not successfully trashed (no entry in mapping).
-                // Using pairs avoids the mis-zip bug that occurs when only a subset is trashed.
-                let pairs: [(original: URL, trashed: URL)] = items.compactMap { item in
-                    guard let trashedURL = mapping[item.url] else { return nil }
-                    return (original: item.url, trashed: trashedURL)
-                }
-                if !pairs.isEmpty {
-                    lastAction = UndoableAction(kind: .trash(pairs: pairs))
-                }
-            } catch {
-                errorMessage = error.localizedDescription
+            let result = await TrashService.shared.trash(items: items)
+            // Build pairs so each original is matched with its actual trashed URL.
+            // compactMap drops items that were not successfully trashed (no entry in mapping).
+            // Using pairs avoids the mis-zip bug that occurs when only a subset is trashed.
+            let pairs: [(original: URL, trashed: URL)] = items.compactMap { item in
+                guard let trashedURL = result.mapping[item.url] else { return nil }
+                return (original: item.url, trashed: trashedURL)
+            }
+            if !pairs.isEmpty {
+                lastAction = UndoableAction(kind: .trash(pairs: pairs))
+            }
+            if !result.failures.isEmpty {
+                errorMessage = "Failed to move to Trash:\n" + result.failures.joined(separator: "\n")
             }
         }
     }
@@ -169,14 +168,22 @@ final class BrowserViewModel {
         switch action.kind {
         case .trash(let pairs):
             Task {
-                do {
-                    for (original, trashed) in pairs {
-                        // restoreItem moves to the exact original URL, preserving the original filename
-                        // even if the file was renamed in Trash due to a naming conflict.
+                var failedPairs: [(original: URL, trashed: URL)] = []
+                var failureMessages: [String] = []
+                for (original, trashed) in pairs {
+                    // restoreItem moves to the exact original URL, preserving the original filename
+                    // even if the file was renamed in Trash due to a naming conflict.
+                    do {
                         try await fs.restoreItem(from: trashed, to: original)
+                    } catch {
+                        failedPairs.append((original: original, trashed: trashed))
+                        failureMessages.append("\(original.lastPathComponent): \(error.localizedDescription)")
                     }
-                } catch {
-                    errorMessage = "Undo failed: \(error.localizedDescription)"
+                }
+                if !failedPairs.isEmpty {
+                    // Restore lastAction with only the failed pairs so the user can retry.
+                    lastAction = UndoableAction(kind: .trash(pairs: failedPairs))
+                    errorMessage = "Undo failed for some items:\n" + failureMessages.joined(separator: "\n")
                 }
             }
         }
@@ -224,6 +231,10 @@ final class BrowserViewModel {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    func selectAll() {
+        selection = Set(sortedItems.map(\.url))
     }
 
     func copy() {
@@ -302,14 +313,14 @@ final class BrowserViewModel {
             do {
                 try await fs.copy(items: existing, to: destination)
                 if isCut {
-                    do {
-                        try await TrashService.shared.trash(items: existing)
-                    } catch {
-                        // Copy succeeded but trash failed — files are now in both locations.
-                        // Restore clipboard as non-cut so the user can retry the delete manually.
+                    let trashResult = await TrashService.shared.trash(items: existing)
+                    if !trashResult.failures.isEmpty {
+                        // Copy succeeded but some originals could not be removed — files are now
+                        // in both locations. Restore clipboard as non-cut so the user can retry.
                         clipboardItems = existing
                         clipboardIsCut = false
-                        errorMessage = "Files were copied but could not be removed from the original location: \(error.localizedDescription)"
+                        errorMessage = "Files were copied but could not be removed from the original location:\n"
+                            + trashResult.failures.joined(separator: "\n")
                     }
                 }
             } catch {

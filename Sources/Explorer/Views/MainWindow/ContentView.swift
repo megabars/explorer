@@ -95,11 +95,6 @@ private extension View {
                 addressBar.beginEditing(from: navigation.currentURL)
                 return .handled
             }
-            .onKeyPress(.init("n"), phases: .down) { event in
-                guard event.modifiers.contains([.command, .shift]) else { return .ignored }
-                browser.newFolder(in: navigation.currentURL)
-                return .handled
-            }
             .onKeyPress(.delete, phases: .down) { event in
                 guard event.modifiers.contains(.command) else { return .ignored }
                 browser.trash(navigation: navigation)
@@ -152,6 +147,23 @@ private extension View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .undoRequested)) { _ in
                 browser.undo()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .selectAllRequested)) { _ in
+                browser.selectAll()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goBackRequested)) { _ in
+                navigation.goBack()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goForwardRequested)) { _ in
+                navigation.goForward()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .goUpRequested)) { _ in
+                navigation.goUp()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .openSelectedRequested)) { _ in
+                for item in browser.selectedItems {
+                    browser.open(item, navigation: navigation)
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: .renameRequestedForURL)) { note in
                 guard let url = note.userInfo?["url"] as? URL,

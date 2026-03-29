@@ -327,29 +327,34 @@ actor FileSystemService {
             }
         }
 
-        // Rename from temp to a human-readable name, resolving conflicts atomically
+        // Rename from temp to a human-readable name, resolving conflicts atomically.
+        // Wrap in do/catch so tempURL is always cleaned up on any error (not just the
+        // counter-limit case), including non-conflict errors like permission denied.
         var archiveName = "Archive"
         var archiveURL = directory.appendingPathComponent("\(archiveName).zip")
         var counter = 2
-        while true {
-            do {
-                try FileManager.default.moveItem(at: tempURL, to: archiveURL)
-                break
-            } catch let error as NSError
-                where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
-                guard counter <= 1000 else {
-                    // Clean up temp file before throwing
-                    try? FileManager.default.removeItem(at: tempURL)
-                    throw NSError(
-                        domain: NSCocoaErrorDomain,
-                        code: NSFileWriteFileExistsError,
-                        userInfo: [NSLocalizedDescriptionKey: "Could not find a unique archive name."]
-                    )
+        do {
+            while true {
+                do {
+                    try FileManager.default.moveItem(at: tempURL, to: archiveURL)
+                    break
+                } catch let error as NSError
+                    where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                    guard counter <= 1000 else {
+                        throw NSError(
+                            domain: NSCocoaErrorDomain,
+                            code: NSFileWriteFileExistsError,
+                            userInfo: [NSLocalizedDescriptionKey: "Could not find a unique archive name."]
+                        )
+                    }
+                    archiveName = "Archive \(counter)"
+                    archiveURL = directory.appendingPathComponent("\(archiveName).zip")
+                    counter += 1
                 }
-                archiveName = "Archive \(counter)"
-                archiveURL = directory.appendingPathComponent("\(archiveName).zip")
-                counter += 1
             }
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw error
         }
     }
 }

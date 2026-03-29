@@ -46,19 +46,42 @@ struct ExplorerApp: App {
                 .keyboardShortcut("z", modifiers: .command)
             }
             // Override Find to open our filter bar instead of the system Find panel.
+            // Also restore Select All (Cmd+A) which is lost when replacing .textEditing.
             CommandGroup(replacing: .textEditing) {
                 Button("Filter") {
                     NotificationCenter.default.post(name: .filterRequested, object: nil)
                 }
                 .keyboardShortcut("f", modifiers: .command)
+                Button("Select All") {
+                    NotificationCenter.default.post(name: .selectAllRequested, object: nil)
+                }
+                .keyboardShortcut("a", modifiers: .command)
             }
-            // Note: "Select All" (Cmd+A) is intentionally not overridden here.
-            // NSTableView handles it natively via the AppKit responder chain.
             CommandGroup(after: .saveItem) {
                 Button("Get Info") {
                     NotificationCenter.default.post(name: .getInfoRequested, object: nil)
                 }
                 .keyboardShortcut("i", modifiers: .command)
+            }
+            // Go menu — navigation shortcuts mirroring macOS Finder
+            CommandMenu("Go") {
+                Button("Back") {
+                    NotificationCenter.default.post(name: .goBackRequested, object: nil)
+                }
+                .keyboardShortcut("[", modifiers: .command)
+                Button("Forward") {
+                    NotificationCenter.default.post(name: .goForwardRequested, object: nil)
+                }
+                .keyboardShortcut("]", modifiers: .command)
+                Button("Enclosing Folder") {
+                    NotificationCenter.default.post(name: .goUpRequested, object: nil)
+                }
+                .keyboardShortcut(.upArrow, modifiers: .command)
+                Divider()
+                Button("Open Selected") {
+                    NotificationCenter.default.post(name: .openSelectedRequested, object: nil)
+                }
+                .keyboardShortcut(.downArrow, modifiers: .command)
             }
         }
     }
@@ -74,4 +97,9 @@ extension Notification.Name {
     static let filterRequested = Notification.Name("filterRequested")
     static let undoRequested = Notification.Name("undoRequested")
     static let getInfoRequested = Notification.Name("getInfoRequested")
+    static let selectAllRequested = Notification.Name("selectAllRequested")
+    static let goBackRequested = Notification.Name("goBackRequested")
+    static let goForwardRequested = Notification.Name("goForwardRequested")
+    static let goUpRequested = Notification.Name("goUpRequested")
+    static let openSelectedRequested = Notification.Name("openSelectedRequested")
 }
