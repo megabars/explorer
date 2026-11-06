@@ -6,7 +6,16 @@ import Observation
 @MainActor
 final class BrowserViewModel {
     var items: [FileItem] = []
-    var selection: Set<URL> = []
+    var selection: Set<URL> {
+        get { selectedURLs }
+        set {
+            guard selectedURLs != newValue else { return }
+            selectedURLs = newValue
+            selectionRevision &+= 1
+        }
+    }
+    private var selectedURLs: Set<URL> = []
+    private var selectionRevision: UInt64 = 0
     var viewMode: ViewMode = .list
     var isLoading: Bool = false
     /// Error from loading a directory — shown inline in BrowserContainerView instead of content.
@@ -19,13 +28,16 @@ final class BrowserViewModel {
     }
 
     // Clipboard state
-    var clipboardItems: [FileItem] = []
-    var clipboardIsCut: Bool = false
+    private(set) var clipboardItems: [FileItem] = []
+    private(set) var clipboardIsCut: Bool = false
 
     // Undo state — stores the last file operation for Cmd+Z
     struct UndoableAction {
-        enum Kind { case trash(originalURLs: [URL], trashedURLs: [URL]) }
-        let kind: Kind
+        struct TrashedItem {
+            let originalURL: URL
+            let trashedURL: URL
+        }
+        let items: [TrashedItem]
     }
     private(set) var lastAction: UndoableAction?
 
@@ -41,7 +53,13 @@ final class BrowserViewModel {
     var sortAscending: Bool = true
 
     // Search / filter
-    var searchQuery: String = ""
+    var searchQuery: String = "" {
+        didSet {
+            let previousSelection = selectedURLs
+            pruneSelection()
+            if previousSelection != selectedURLs { selectionRevision &+= 1 }
+        }
+    }
 
     // Cache for "Open With" apps — keyed by file extension to avoid repeated I/O
     private var openWithCache: [String: [URL]] = [:]
@@ -59,52 +77,158 @@ final class BrowserViewModel {
 
     private var loadTask: Task<Void, Never>?
     private let watcher = DirectoryWatcher()
-    private let fs = FileSystemService.shared
-    /// Suppresses watcher-triggered reloads during explicit reloads (e.g. after newFolder).
-    private var suppressReload: Bool = false
+    private let fs: FileSystemService
+    private let pasteboard: NSPasteboard
+    private let directoryLoader: @Sendable (URL, Bool) async throws -> [FileItem]
+    private let recycle: @MainActor ([FileItem]) async throws -> [URL: URL]
+    private var currentURL: URL?
+    private var navigationGeneration: UInt64 = 0
+    private var listingGeneration: UInt64 = 0
+    private var reloadRequested = false
+    private var pendingRenameName: String?
+    private struct RenamedSelection {
+        let originalURL: URL
+        let destinationURL: URL
+        let revision: UInt64
+        let wasAnchor: Bool
+    }
+    private var renamedSelections: [RenamedSelection] = []
+    private var clipboardChangeCount: Int?
+    private var isPasting = false
 
-    // MARK: - Loading
-
-    func load(url: URL) {
-        loadTask?.cancel()
-        isLoading = true
-        loadError = nil
-
-        loadTask = Task {
-            do {
-                let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
-                if Task.isCancelled { return }
-                items = loaded
-                selection = []
-                isLoading = false
-            } catch {
-                if Task.isCancelled { return }
-                loadError = error.localizedDescription
-                items = []
-                isLoading = false
-            }
-        }
-
-        watcher.start(watching: url) { [weak self] in
-            guard let self else { return }
-            Task { await self.reload(url: url) }
+    init(
+        fileSystem: FileSystemService = .shared,
+        pasteboard: NSPasteboard = .general,
+        directoryLoader: (@Sendable (URL, Bool) async throws -> [FileItem])? = nil,
+        recycle: (@MainActor ([FileItem]) async throws -> [URL: URL])? = nil
+    ) {
+        self.fs = fileSystem
+        self.pasteboard = pasteboard
+        self.recycle = recycle ?? { try await TrashService.shared.trash(items: $0) }
+        self.directoryLoader = directoryLoader ?? { url, showHidden in
+            try await fileSystem.listDirectory(at: url, showHidden: showHidden)
         }
     }
 
-    private func reload(url: URL) async {
-        guard !isLoading, !suppressReload else { return }
+    // MARK: - Loading
+
+    @discardableResult
+    func load(url: URL) -> Task<Void, Never> {
+        loadTask?.cancel()
+        navigationGeneration &+= 1
+        listingGeneration &+= 1
+        let generation = navigationGeneration
+        let request = listingGeneration
+        currentURL = url.standardizedFileURL
+        isLoading = true
+        loadError = nil
+        items = []
+        selection = []
+        lastSelectedURL = nil
+        pendingRenameName = nil
+        renamedSelections.removeAll()
+        cancelRename()
+        reloadRequested = false
+        let hidden = showHidden
+
+        let task = Task {
+            do {
+                let loaded = try await directoryLoader(url, hidden)
+                guard !Task.isCancelled, isCurrent(url, generation: generation),
+                      listingGeneration == request else { return }
+                applyListing(loaded)
+            } catch {
+                guard !Task.isCancelled, isCurrent(url, generation: generation),
+                      listingGeneration == request else { return }
+                loadError = error.localizedDescription
+                items = []
+            }
+            isLoading = false
+            if reloadRequested {
+                reloadRequested = false
+                await reload(url: url, generation: generation)
+            }
+        }
+        loadTask = task
+        watcher.start(watching: url) { [weak self] in
+            guard let self, self.isCurrent(url, generation: generation) else { return }
+            Task { await self.reload(url: url, generation: generation) }
+        }
+        return task
+    }
+
+    private func isCurrent(_ url: URL, generation: UInt64) -> Bool {
+        navigationGeneration == generation && currentURL == url.standardizedFileURL
+    }
+
+    private func reload(url: URL, generation: UInt64) async {
+        guard isCurrent(url, generation: generation) else { return }
+        guard !isLoading else {
+            reloadRequested = true
+            return
+        }
+        listingGeneration &+= 1
+        let request = listingGeneration
         do {
-            let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
-            items = loaded
-            // Prune selection to only URLs still present in the new listing
-            let currentURLs = Set(loaded.map(\.url))
-            selection = selection.intersection(currentURLs)
+            let loaded = try await directoryLoader(url, showHidden)
+            guard isCurrent(url, generation: generation), listingGeneration == request else { return }
+            applyListing(loaded)
+            loadError = nil
         } catch {
+            guard isCurrent(url, generation: generation), listingGeneration == request else { return }
             loadError = error.localizedDescription
         }
     }
 
+    private func applyListing(_ loaded: [FileItem]) {
+        items = loaded
+        restoreRenamedSelections()
+        pruneSelection()
+        // Listing URLs may canonicalize a symlinked parent or add a directory slash.
+        // This listing is already scoped to the current navigation generation.
+        if let pending = pendingRenameName,
+           let item = loaded.first(where: { $0.isDirectory && $0.name == pending }) {
+            pendingRenameName = nil
+            // A newly created folder must be visible before entering inline rename.
+            if !searchQuery.isEmpty { searchQuery = "" }
+            selection = [item.url]
+            startRename(item)
+        } else if let renamingItem, !loaded.contains(where: { $0.id == renamingItem.id }) {
+            cancelRename()
+        }
+    }
+
+    private func pruneSelection() {
+        let visible = Set(filteredItems.map(\.url))
+        // Keep the selection revision when a watcher removes the old row during a rename.
+        selectedURLs.formIntersection(visible)
+        if let lastSelectedURL, !visible.contains(lastSelectedURL) { self.lastSelectedURL = nil }
+        if let renamingItem, !visible.contains(renamingItem.url) { cancelRename() }
+    }
+
+    private func restoreRenamedSelections() {
+        guard !renamedSelections.isEmpty else { return }
+        let visible = filteredItems
+        var restored = selectedURLs
+        for update in renamedSelections where update.revision == selectionRevision {
+            let path = update.destinationURL.standardizedFileURL.path
+            guard let item = visible.first(where: { $0.url.standardizedFileURL.path == path }) else { continue }
+            restored.remove(update.originalURL)
+            restored.insert(item.url)
+            if lastSelectedURL == update.originalURL || (lastSelectedURL == nil && update.wasAnchor) {
+                lastSelectedURL = item.url
+            }
+        }
+        selectedURLs = restored
+        renamedSelections.removeAll()
+    }
+
     func stopWatching() {
+        navigationGeneration &+= 1
+        listingGeneration &+= 1
+        currentURL = nil
+        pendingRenameName = nil
+        renamedSelections.removeAll()
         watcher.stop()
         loadTask?.cancel()
         loadTask = nil
@@ -117,7 +241,7 @@ final class BrowserViewModel {
         if item.isDirectory && !item.isPackage {
             navigation.navigate(to: item.url)
         } else {
-            NSWorkspace.shared.open(item.url)
+            FileOpening.open(item.url) { [weak self] in self?.errorMessage = $0 }
         }
     }
 
@@ -127,46 +251,58 @@ final class BrowserViewModel {
         trash(items: selectedItems)
     }
 
-    func trash(items: [FileItem]) {
-        guard !items.isEmpty else { return }
-        Task {
+    @discardableResult
+    func trash(items: [FileItem]) -> Task<Void, Never>? {
+        guard !items.isEmpty else { return nil }
+        return Task {
             do {
-                let mapping = try await TrashService.shared.trash(items: items)
-                let originals = items.map(\.url)
-                let trashed = originals.compactMap { mapping[$0] }
-                if !trashed.isEmpty {
-                    lastAction = UndoableAction(kind: .trash(originalURLs: originals, trashedURLs: trashed))
-                }
+                let mapping = try await recycle(items)
+                recordTrash(mapping: mapping, items: items)
+            } catch let failure as TrashService.PartialFailure {
+                recordTrash(mapping: failure.mapping, items: items)
+                errorMessage = failure.localizedDescription
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
     }
 
+    private func recordTrash(mapping: [URL: URL], items: [FileItem]) {
+        let restoredPairs = items.compactMap { item -> UndoableAction.TrashedItem? in
+            guard let trashed = mapping[item.url] else { return nil }
+            return .init(originalURL: item.url, trashedURL: trashed)
+        }
+        if !restoredPairs.isEmpty { lastAction = UndoableAction(items: restoredPairs) }
+    }
+
     /// Undoes the last undoable action (currently: restoring trashed files).
-    func undo() {
-        guard let action = lastAction else { return }
+    @discardableResult
+    func undo() -> Task<Void, Never>? {
+        guard let action = lastAction else { return nil }
         lastAction = nil
-        switch action.kind {
-        case .trash(let originalURLs, let trashedURLs):
-            Task {
+        return Task {
+            var remaining: [UndoableAction.TrashedItem] = []
+            var failures: [String] = []
+            for item in action.items {
                 do {
-                    for (original, trashed) in zip(originalURLs, trashedURLs) {
-                        try await fs.move(from: [trashed], to: original.deletingLastPathComponent())
-                    }
+                    try await fs.restore(from: item.trashedURL, to: item.originalURL)
                 } catch {
-                    errorMessage = "Undo failed: \(error.localizedDescription)"
+                    remaining.append(item)
+                    failures.append("\(item.originalURL.lastPathComponent): \(error.localizedDescription)")
                 }
+            }
+            if !failures.isEmpty {
+                errorMessage = "Undo failed:\n" + failures.joined(separator: "\n")
+                // Do not overwrite a newer undo record created while restore was running.
+                if lastAction == nil { lastAction = UndoableAction(items: remaining) }
             }
         }
     }
 
-    func newFolder(in url: URL) {
-        Task {
-            // Suppress watcher-triggered reloads while we explicitly reload after creation.
-            // Set before any await so it takes effect synchronously on @MainActor.
-            suppressReload = true
-            defer { suppressReload = false }
+    @discardableResult
+    func newFolder(in url: URL) -> Task<Void, Never> {
+        let generation = navigationGeneration
+        return Task {
             do {
                 var name = "New Folder"
                 var counter = 2
@@ -191,114 +327,113 @@ final class BrowserViewModel {
                         counter += 1
                     }
                 }
-                // Reload explicitly so the new folder appears in items before we rename
-                let loaded = try await fs.listDirectory(at: url, showHidden: showHidden)
-                items = loaded
-                if let newItem = items.first(where: { $0.name == name && $0.isDirectory }) {
-                    startRename(newItem)
-                } else {
-                    errorMessage = "New folder was created but could not be located for renaming."
-                }
+                // Complete the filesystem operation even after navigation, but never apply
+                // its old directory listing or rename state to the new location.
+                guard isCurrent(url, generation: generation) else { return }
+                pendingRenameName = name
+                if isLoading { await loadTask?.value }
+                guard isCurrent(url, generation: generation) else { return }
+                await reload(url: url, generation: generation)
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
     }
 
+    private static let cutPasteboardType = NSPasteboard.PasteboardType("com.explorer.cut")
+
+    private var pasteboardURLs: [URL] {
+        (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+
+    var canPaste: Bool { !isPasting && !pasteboardURLs.isEmpty }
+
+    /// Called when returning from another app, which may have replaced our clipboard.
+    func refreshClipboard() {
+        if clipboardChangeCount != pasteboard.changeCount {
+            clipboardItems = []
+            clipboardIsCut = false
+            clipboardChangeCount = nil
+        }
+    }
+
     func copy() {
-        clipboardItems = selectedItems
-        clipboardIsCut = false
-        writeToSystemPasteboard(items: selectedItems, isCut: false)
+        let selected = selectedItems
+        guard !selected.isEmpty else { return }
+        writeToSystemPasteboard(items: selected, isCut: false)
     }
 
     func cut() {
-        clipboardItems = selectedItems
-        clipboardIsCut = true
-        writeToSystemPasteboard(items: selectedItems, isCut: true)
+        let selected = selectedItems
+        guard !selected.isEmpty else { return }
+        writeToSystemPasteboard(items: selected, isCut: true)
     }
 
-    /// Writes file URLs to NSPasteboard so Finder and other apps can paste them.
     private func writeToSystemPasteboard(items: [FileItem], isCut: Bool) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        let urls = items.map(\.url) as [NSURL]
-        pb.writeObjects(urls)
-        // Finder uses "com.apple.pasteboard.promised-file-content-type" for cut;
-        // we mark our cut state via a custom pasteboard type.
-        if isCut {
-            pb.setData(Data(), forType: NSPasteboard.PasteboardType("com.apple.pasteboard.cut"))
-        }
+        pasteboard.clearContents()
+        pasteboard.writeObjects(items.map(\.url) as [NSURL])
+        if isCut { pasteboard.setData(Data(), forType: Self.cutPasteboardType) }
+        clipboardItems = items
+        clipboardIsCut = isCut
+        clipboardChangeCount = pasteboard.changeCount
     }
 
-    /// Reads file URLs from NSPasteboard (e.g. from Finder copy).
-    func pasteFromSystemPasteboard(into destination: URL) {
-        let pb = NSPasteboard.general
-        guard let urls = pb.readObjects(forClasses: [NSURL.self], options: [
-            .urlReadingFileURLsOnly: true
-        ]) as? [URL], !urls.isEmpty else {
-            // Fall back to in-memory clipboard
-            paste(into: destination)
-            return
+    /// Keyboard and context-menu commands deliberately share the same clipboard path.
+    @discardableResult
+    func pasteFromSystemPasteboard(into destination: URL) -> Task<Void, Never>? {
+        paste(into: destination)
+    }
+
+    @discardableResult
+    func paste(into destination: URL) -> Task<Void, Never>? {
+        guard !isPasting else { return nil }
+        let changeCount = pasteboard.changeCount
+        let urls = pasteboardURLs
+        let isCut = pasteboard.data(forType: Self.cutPasteboardType) != nil
+        // URLs and cut intent must belong to the same pasteboard generation.
+        guard pasteboard.changeCount == changeCount else {
+            refreshClipboard()
+            return nil
         }
-        let isCut = pb.data(forType: NSPasteboard.PasteboardType("com.apple.pasteboard.cut")) != nil
-        Task {
+        guard !urls.isEmpty else {
+            refreshClipboard()
+            return nil
+        }
+        isPasting = true
+        return Task {
+            defer { isPasting = false }
+            let fileItems = urls.map { url in
+                FileItem(id: url, url: url, name: url.lastPathComponent,
+                         isDirectory: false, isPackage: false, isHidden: false,
+                         isSymlink: false, fileSize: nil, contentModificationDate: nil,
+                         creationDate: nil, kind: "", tags: [])
+            }
+            var completed = 0
             do {
                 if isCut {
-                    try await fs.move(from: urls, to: destination)
-                    pb.clearContents()
-                } else {
-                    let fileItems = urls.map { url in
-                        FileItem(id: url, url: url, name: url.lastPathComponent,
-                                 isDirectory: false, isPackage: false, isHidden: false,
-                                 isSymlink: false, fileSize: nil, contentModificationDate: nil,
-                                 creationDate: nil, kind: "", tags: [])
+                    // Track each successful move so a partial failure can be retried
+                    // without trying to move sources that have already disappeared.
+                    for url in urls {
+                        try await fs.move(from: [url], to: destination)
+                        completed += 1
                     }
+                } else {
                     try await fs.copy(items: fileItems, to: destination)
                 }
             } catch {
                 errorMessage = error.localizedDescription
             }
-        }
-    }
-
-    func paste(into destination: URL) {
-        guard !clipboardItems.isEmpty else { return }
-        let isCut = clipboardIsCut
-        let items = clipboardItems
-        // For cut, clear clipboard immediately to prevent a second paste of the same items.
-        // If the operation fails, we restore the clipboard below.
-        if isCut {
-            clipboardItems = []
-            clipboardIsCut = false
-        }
-        Task {
-            // Filter to items that still exist — clipboard may be stale
-            var existing: [FileItem] = []
-            for item in items {
-                if await fs.exists(at: item.url) { existing.append(item) }
-            }
-            guard !existing.isEmpty else { return }
-            do {
-                try await fs.copy(items: existing, to: destination)
-                if isCut {
-                    do {
-                        try await TrashService.shared.trash(items: existing)
-                    } catch {
-                        // Copy succeeded but trash failed — files are now in both locations.
-                        // Restore clipboard as non-cut so the user can retry the delete manually.
-                        clipboardItems = existing
-                        clipboardIsCut = false
-                        errorMessage = "Files were copied but could not be removed from the original location: \(error.localizedDescription)"
-                    }
+            if isCut, pasteboard.changeCount == changeCount {
+                if completed == urls.count {
+                    pasteboard.clearContents()
+                    clipboardItems = []
+                    clipboardIsCut = false
+                    clipboardChangeCount = nil
+                } else if completed > 0 {
+                    writeToSystemPasteboard(items: Array(fileItems.dropFirst(completed)), isCut: true)
                 }
-            } catch {
-                // Copy failed — restore the clipboard to its original cut state so user can retry.
-                if isCut {
-                    clipboardItems = items
-                    clipboardIsCut = true
-                }
-                errorMessage = error.localizedDescription
             }
+            refreshClipboard()
         }
     }
 
@@ -307,27 +442,35 @@ final class BrowserViewModel {
         renameText = item.name
     }
 
-    func commitRename(navigation: NavigationState) {
-        guard let item = renamingItem else {
-            renamingItem = nil
-            return
-        }
-        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, trimmed != item.name else {
-            renamingItem = nil
-            return
-        }
-        // Validate: macOS filenames cannot contain '/' or NUL
-        guard !trimmed.contains("/"), !trimmed.contains("\0") else {
-            errorMessage = "The name cannot contain \"/\"."
-            renamingItem = nil
-            return
-        }
-        let capturedItem = item
+    @discardableResult
+    func commitRename(navigation: NavigationState) -> Task<Void, Never>? {
+        guard let item = renamingItem else { return nil }
+        let name = renameText
         renamingItem = nil
-        Task {
+        guard !name.isEmpty, name != item.name else { return nil }
+        // Validate: macOS filenames cannot contain '/' or NUL
+        guard !name.contains("/"), !name.contains("\0") else {
+            errorMessage = "The name cannot contain \"/\" or a NUL character."
+            return nil
+        }
+        let generation = navigationGeneration
+        let navigationRevision = navigation.revision
+        let directory = currentURL
+        let revision = selectionRevision
+        let wasSelected = selection.contains(item.url)
+        let wasAnchor = lastSelectedURL == item.url
+        return Task {
             do {
-                _ = try await fs.rename(item: capturedItem, to: trimmed)
+                let destination = try await fs.rename(item: item, to: name)
+                guard let directory, isCurrent(directory, generation: generation),
+                      navigation.revision == navigationRevision else { return }
+                if wasSelected, revision == selectionRevision {
+                    renamedSelections.append(.init(
+                        originalURL: item.url, destinationURL: destination,
+                        revision: revision, wasAnchor: wasAnchor
+                    ))
+                }
+                await reload(url: directory, generation: generation)
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -354,8 +497,7 @@ final class BrowserViewModel {
         Task {
             do {
                 try await fs.setTags(tags, for: item.url)
-                // Tag changes write xattrs on the file, not the directory, so the watcher
-                // never fires. Update the item in-place so dots appear immediately.
+                // Update immediately rather than waiting for the coalesced file event.
                 if let idx = items.firstIndex(where: { $0.id == item.id }) {
                     let old = items[idx]
                     items[idx] = FileItem(
@@ -387,39 +529,43 @@ final class BrowserViewModel {
     // MARK: - Helpers
 
     var selectedItems: [FileItem] {
-        items.filter { selection.contains($0.url) }
+        guard !isLoading else { return [] }
+        return filteredItems.filter { selection.contains($0.url) }
     }
 
     /// URLs currently marked as cut — views should display these at reduced opacity.
     var cutURLs: Set<URL> {
-        clipboardIsCut ? Set(clipboardItems.map(\.url)) : []
+        clipboardIsCut && clipboardChangeCount == pasteboard.changeCount
+            ? Set(clipboardItems.map(\.url)) : []
     }
 
-    /// Filtered and sorted view of items — use this in all views instead of `items` directly.
+    private var filteredItems: [FileItem] {
+        searchQuery.isEmpty ? items : items.filter { $0.name.localizedCaseInsensitiveContains(searchQuery) }
+    }
+
+    /// Directories remain first; equal primary keys use the name and URL as stable ties.
     var sortedItems: [FileItem] {
-        let base: [FileItem]
-        if searchQuery.isEmpty {
-            base = items
-        } else {
-            base = items.filter { $0.name.localizedCaseInsensitiveContains(searchQuery) }
-        }
-        return base.sorted { a, b in
+        filteredItems.sorted { a, b in
             if a.isDirectory != b.isDirectory { return a.isDirectory }
-            let ascending: Bool
+            let order: ComparisonResult
             switch sortKey {
             case .name:
-                ascending = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+                order = a.name.localizedCaseInsensitiveCompare(b.name)
             case .dateModified:
-                let aDate = a.contentModificationDate ?? .distantPast
-                let bDate = b.contentModificationDate ?? .distantPast
-                ascending = aDate < bDate
+                order = (a.contentModificationDate ?? .distantPast).compare(b.contentModificationDate ?? .distantPast)
             case .size:
-                ascending = (a.fileSize ?? -1) < (b.fileSize ?? -1)
+                let left = a.fileSize ?? -1
+                let right = b.fileSize ?? -1
+                order = left == right ? .orderedSame : (left < right ? .orderedAscending : .orderedDescending)
             case .kind:
-                ascending = a.kind.localizedCaseInsensitiveCompare(b.kind) == .orderedAscending
+                order = a.kind.localizedCaseInsensitiveCompare(b.kind)
             }
-            return sortAscending ? ascending : !ascending
+            if order != .orderedSame {
+                return order == (sortAscending ? .orderedAscending : .orderedDescending)
+            }
+            let nameOrder = a.name.localizedCaseInsensitiveCompare(b.name)
+            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+            return a.url.absoluteString < b.url.absoluteString
         }
     }
-
 }

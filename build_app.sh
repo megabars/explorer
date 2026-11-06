@@ -3,10 +3,10 @@ set -e
 
 APP_NAME="Explorer"
 APP_BUNDLE="${APP_NAME}.app"
-BUILD_DIR=".build/debug"
 
 echo "Building..."
-swift build 2>&1
+swift build "$@" 2>&1
+BUILD_DIR="$(swift build "$@" --show-bin-path)"
 
 echo "Creating .app bundle..."
 rm -rf "${APP_BUNDLE}"

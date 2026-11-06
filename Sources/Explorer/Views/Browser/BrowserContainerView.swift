@@ -12,10 +12,13 @@ struct BrowserContainerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = browser.loadError {
                 errorView(message: error)
-            } else if browser.sortedItems.isEmpty {
-                emptyView
             } else {
                 contentView
+                    .overlay {
+                        if browser.sortedItems.isEmpty {
+                            emptyView.allowsHitTesting(false)
+                        }
+                    }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -44,10 +47,10 @@ struct BrowserContainerView: View {
 
     private var emptyView: some View {
         VStack(spacing: 8) {
-            Image(systemName: "folder")
+            Image(systemName: browser.searchQuery.isEmpty ? "folder" : "magnifyingglass")
                 .font(.system(size: 40))
                 .foregroundStyle(.tertiary)
-            Text("Empty Folder")
+            Text(browser.searchQuery.isEmpty ? "Empty Folder" : "No Matching Items")
                 .font(.title3)
                 .foregroundStyle(.secondary)
         }

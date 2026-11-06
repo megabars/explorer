@@ -16,10 +16,9 @@ struct SearchBarView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($isFocused)
-                .onKeyPress(.escape) {
+                .onExitCommand {
                     query = ""
                     onClose()
-                    return .handled
                 }
 
             if !query.isEmpty {

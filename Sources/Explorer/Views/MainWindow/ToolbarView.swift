@@ -12,24 +12,27 @@ struct ExplorerToolbar: ToolbarContent {
             Button {
                 navigation.goBack()
             } label: {
-                Image(systemName: "chevron.left")
+                Label("Back", systemImage: "chevron.left")
             }
+            .labelStyle(.iconOnly)
             .disabled(!navigation.canGoBack)
             .help("Back")
 
             Button {
                 navigation.goForward()
             } label: {
-                Image(systemName: "chevron.right")
+                Label("Forward", systemImage: "chevron.right")
             }
+            .labelStyle(.iconOnly)
             .disabled(!navigation.canGoForward)
             .help("Forward")
 
             Button {
                 navigation.goUp()
             } label: {
-                Image(systemName: "arrow.up")
+                Label("Go Up", systemImage: "arrow.up")
             }
+            .labelStyle(.iconOnly)
             .disabled(!navigation.canGoUp)
             .help("Go Up")
         }
@@ -48,30 +51,37 @@ struct ExplorerToolbar: ToolbarContent {
         }
 
         // View mode picker + controls on the right
-        ToolbarItemGroup(placement: .primaryAction) {
+        ToolbarItem(id: "view-mode", placement: .primaryAction) {
             Picker("View Mode", selection: $browser.viewMode) {
                 ForEach(ViewMode.allCases, id: \.self) { mode in
-                    Image(systemName: mode.systemImage).tag(mode)
+                    Label(mode.label, systemImage: mode.systemImage).tag(mode)
                 }
             }
+            .labelStyle(.iconOnly)
             .pickerStyle(.segmented)
             .frame(width: 70)
             .help("Switch view mode")
+        }
 
+        ToolbarItem(id: "hidden-files", placement: .primaryAction) {
             Button {
                 browser.showHidden.toggle()
-                browser.searchQuery = ""
                 browser.load(url: navigation.currentURL)
             } label: {
-                Image(systemName: browser.showHidden ? "eye" : "eye.slash")
+                Label(browser.showHidden ? "Hide Hidden Files" : "Show Hidden Files",
+                      systemImage: browser.showHidden ? "eye" : "eye.slash")
             }
+            .labelStyle(.iconOnly)
             .help(browser.showHidden ? "Hide Hidden Files" : "Show Hidden Files")
+        }
 
+        ToolbarItem(id: "new-folder", placement: .primaryAction) {
             Button {
                 browser.newFolder(in: navigation.currentURL)
             } label: {
-                Image(systemName: "folder.badge.plus")
+                Label("New Folder", systemImage: "folder.badge.plus")
             }
+            .labelStyle(.iconOnly)
             .help("New Folder (⇧⌘N)")
         }
     }

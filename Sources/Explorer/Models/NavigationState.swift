@@ -4,17 +4,21 @@ import Observation
 @Observable
 @MainActor
 final class NavigationState {
-    var currentURL: URL
+    private(set) var currentURL: URL {
+        didSet { revision &+= 1 }
+    }
+    private(set) var revision: UInt64 = 0
     private(set) var backStack: [URL] = []
     private(set) var forwardStack: [URL] = []
     private static let maxStackSize = 100
 
     init(startURL: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        self.currentURL = startURL
+        self.currentURL = startURL.standardizedFileURL
     }
 
     func navigate(to url: URL) {
-        guard url != currentURL else { return }
+        let destination = url.standardizedFileURL
+        guard !isCurrentLocation(destination) else { return }
         // Group all three mutations together — @MainActor serialises execution so observers
         // see a consistent snapshot after the current turn of the run loop.
         backStack.append(currentURL)
@@ -22,7 +26,12 @@ final class NavigationState {
             backStack.removeFirst(backStack.count - Self.maxStackSize)
         }
         forwardStack.removeAll()
-        currentURL = url
+        currentURL = destination
+    }
+
+    func isCurrentLocation(_ url: URL) -> Bool {
+        // A trailing directory slash can make two file URLs unequal.
+        currentURL.path == url.standardizedFileURL.path
     }
 
     func goBack() {

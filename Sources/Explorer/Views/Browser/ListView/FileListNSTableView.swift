@@ -2,19 +2,39 @@ import SwiftUI
 import AppKit
 
 struct FileListNSTableView: NSViewRepresentable {
+    private static let tagDotSize: CGFloat = 8
+    private static let tagDotSpacing: CGFloat = 3
+    private static let visibleTagLimit = 5
+
+    enum DropTransfer {
+        case copy, move
+
+        var operation: NSDragOperation {
+            switch self {
+            case .copy: .copy
+            case .move: .move
+            }
+        }
+    }
+
     let items: [FileItem]
     @Binding var selection: Set<URL>
     var renamingItem: FileItem?
-    var renameText: Binding<String>
+    let renameText: (URL) -> String?
     let onOpen: (FileItem) -> Void
-    let onCommitRename: () -> Void
-    let onCancelRename: () -> Void
-    let onTrash: (FileItem) -> Void
+    let onNewFolder: () -> Void
+    let onRename: (FileItem) -> Void
+    let onRenameTextChange: (URL, String) -> Void
+    let onCommitRename: (URL, String) -> Void
+    let onCancelRename: (URL) -> Void
+    let onTrash: ([FileItem]) -> Void
+    let onSelectionAnchorChanged: (URL?) -> Void
+    let onError: @MainActor (String) -> Void
     // Clipboard
     let onCut: () -> Void
     let onCopy: () -> Void
     let onPaste: () -> Void
-    var hasPasteContent: Bool
+    let canPaste: () -> Bool
     // Duplicate
     let onDuplicate: () -> Void
     // Compress
@@ -26,7 +46,7 @@ struct FileListNSTableView: NSViewRepresentable {
     // Current directory (for empty-space context menu)
     var currentURL: URL
     // Drag & Drop
-    let onMove: ([URL], URL) -> Void
+    let onDrop: ([URL], URL, DropTransfer) -> Void
     // Tags column
     var tagsColumnVisible: Bool
     let onTagsColumnVisibilityChanged: (Bool) -> Void
@@ -55,9 +75,11 @@ struct FileListNSTableView: NSViewRepresentable {
 
         let tagsCol = NSTableColumn(identifier: .init("tags"))
         tagsCol.title = "Tags"
-        tagsCol.width = 16
-        tagsCol.minWidth = 12
-        tagsCol.maxWidth = 22
+        let tagsWidth = CGFloat(Self.visibleTagLimit) * Self.tagDotSize
+            + CGFloat(Self.visibleTagLimit - 1) * Self.tagDotSpacing + 6
+        tagsCol.maxWidth = tagsWidth
+        tagsCol.minWidth = tagsWidth
+        tagsCol.width = tagsWidth
 
         let nameCol = NSTableColumn(identifier: .init("name"))
         nameCol.title = "Name"
@@ -86,6 +108,7 @@ struct FileListNSTableView: NSViewRepresentable {
         kindCol.sortDescriptorPrototype = NSSortDescriptor(key: "kind", ascending: true)
 
         for col in [tagsCol, nameCol, dateCol, sizeCol, kindCol] { tableView.addTableColumn(col) }
+        context.coordinator.syncSortDescriptors(in: tableView)
 
         tableView.dataSource = context.coordinator
         tableView.delegate = context.coordinator
@@ -110,8 +133,9 @@ struct FileListNSTableView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        context.coordinator.parent = self
         guard let tableView = nsView.documentView as? NSTableView else { return }
+        let coordinator = context.coordinator
+        coordinator.parent = self
 
         // Sync tags column visibility
         if let col = tableView.tableColumn(withIdentifier: .init("tags")),
@@ -119,65 +143,8 @@ struct FileListNSTableView: NSViewRepresentable {
             col.isHidden = !tagsColumnVisible
         }
 
-        // Sync sort indicator arrow in column headers
-        let keyMap: [BrowserViewModel.SortKey: String] = [.name: "name", .dateModified: "dateModified", .size: "size", .kind: "kind"]
-        for col in tableView.tableColumns {
-            if col.sortDescriptorPrototype?.key == keyMap[sortKey] {
-                tableView.setIndicatorImage(
-                    NSImage(named: sortAscending ? "NSAscendingSortIndicator" : "NSDescendingSortIndicator"),
-                    in: col
-                )
-                tableView.highlightedTableColumn = col
-            } else {
-                tableView.setIndicatorImage(nil, in: col)
-            }
-        }
-
-
-        // Reload when item list or tag content changed — preserves scroll position.
-        // Skip reloadData while rename is in progress to avoid destroying the editing cell.
-        let newIDs = items.map(\.id)
-        let newTagsHash: Int = {
-            var hasher = Hasher()
-            for item in items { hasher.combine(item.url); hasher.combine(item.tags) }
-            return hasher.finalize()
-        }()
-        if newIDs != context.coordinator.lastItemIDs || newTagsHash != context.coordinator.lastTagsHash {
-            // If the item being renamed disappeared, cancel rename first.
-            if let renaming = renamingItem, !items.contains(where: { $0.id == renaming.id }) {
-                context.coordinator.cancelEditing()
-                onCancelRename()
-            }
-            context.coordinator.lastItemIDs = newIDs
-            context.coordinator.lastTagsHash = newTagsHash
-            // Don't reload while rename is active — it would destroy the editing text field.
-            if !context.coordinator.isRenaming {
-                let scrollOffset = nsView.documentVisibleRect.origin
-                tableView.reloadData()
-                nsView.documentView?.scroll(scrollOffset)
-            }
-        }
-
-        // Sync selection from SwiftUI → NSTableView
-        var indexes = IndexSet()
-        for (i, item) in items.enumerated() {
-            if selection.contains(item.url) { indexes.insert(i) }
-        }
-        if tableView.selectedRowIndexes != indexes {
-            tableView.selectRowIndexes(indexes, byExtendingSelection: false)
-        }
-
-        // Sync rename state: begin editing when renamingItem is set, end it when cleared.
-        let coordinator = context.coordinator
-        if let renaming = renamingItem,
-           let row = items.firstIndex(where: { $0.id == renaming.id }) {
-            if !coordinator.isRenaming {
-                coordinator.beginEditing(row: row, text: renameText.wrappedValue, in: tableView)
-            }
-        } else if coordinator.isRenaming {
-            // renamingItem was cleared externally (e.g. cancel from outside) — end editing.
-            coordinator.cancelEditing()
-        }
+        coordinator.syncSortDescriptors(in: tableView)
+        coordinator.updateRows(in: tableView)
     }
 
     // MARK: - Coordinator
@@ -186,13 +153,22 @@ struct FileListNSTableView: NSViewRepresentable {
     class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSTextFieldDelegate {
         var parent: FileListNSTableView
         weak var tableView: NSTableView?
-        var lastItemIDs: [URL] = []
-        var lastTagsHash: Int = 0
+        // AppKit's row indexes refer to this snapshot until the editor can be safely removed.
+        private var displayedItems: [FileItem] = []
+        private var displayedCutURLs: Set<URL> = []
+        private var isSyncingSelection = false
 
         // MARK: Rename state
-        var isRenaming = false
-        var renamingRow: Int = -1
-        weak var editingTextField: NSTextField?
+        private var renamingRow: Int?
+        private weak var editingTextField: NSTextField?
+
+        private struct ValidatedDrop {
+            let sequenceNumber: Int
+            let destination: URL
+            let transfer: DropTransfer
+        }
+
+        private var validatedDrop: ValidatedDrop?
 
         private let dateFormatter: DateFormatter = {
             let f = DateFormatter()
@@ -205,106 +181,149 @@ struct FileListNSTableView: NSViewRepresentable {
             self.parent = parent
         }
 
+        func updateRows(in tableView: NSTableView) {
+            let requestedID = parent.renamingItem?.id
+            let renameTargetMissing = requestedID.map { id in
+                !parent.items.contains { $0.id == id }
+            } ?? false
+            if let renamingRow, displayedItems[renamingRow].id != requestedID || renameTargetMissing {
+                finishEditing()
+            }
+
+            syncRows(in: tableView)
+
+            guard let requestedID else { return }
+            if renameTargetMissing {
+                // This can run during updateNSView. Clear the binding on the next pass.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.parent.renamingItem?.id == requestedID,
+                          !self.parent.items.contains(where: { $0.id == requestedID }) else { return }
+                    self.parent.onCancelRename(requestedID)
+                }
+            } else if renamingRow == nil,
+                      let row = displayedItems.firstIndex(where: { $0.id == requestedID }) {
+                beginEditing(row: row, in: tableView)
+            }
+        }
+
+        private func syncRows(in tableView: NSTableView) {
+            isSyncingSelection = true
+            defer { isSyncingSelection = false }
+            if renamingRow == nil,
+               displayedCutURLs != parent.cutURLs || !displayedItems.elementsEqual(parent.items, by: sameRow) {
+                let scrollOffset = tableView.visibleRect.origin
+                displayedItems = parent.items
+                displayedCutURLs = parent.cutURLs
+                tableView.reloadData()
+                tableView.scroll(scrollOffset)
+            }
+
+            let selection = parent.selection
+            let indexes = IndexSet(displayedItems.indices.filter { selection.contains(displayedItems[$0].url) })
+            if tableView.selectedRowIndexes != indexes {
+                tableView.selectRowIndexes(indexes, byExtendingSelection: false)
+            }
+        }
+
+        private func sameRow(_ lhs: FileItem, _ rhs: FileItem) -> Bool {
+            // FileItem equality tracks identity. Cells and actions also depend on its metadata.
+            lhs.id == rhs.id && lhs.url == rhs.url && lhs.name == rhs.name &&
+            lhs.isDirectory == rhs.isDirectory && lhs.isPackage == rhs.isPackage &&
+            lhs.isHidden == rhs.isHidden && lhs.isSymlink == rhs.isSymlink &&
+            lhs.fileSize == rhs.fileSize && lhs.contentModificationDate == rhs.contentModificationDate &&
+            lhs.creationDate == rhs.creationDate && lhs.kind == rhs.kind && lhs.tags == rhs.tags
+        }
+
         // MARK: - Rename editing
 
-        func beginEditing(row: Int, text: String, in tableView: NSTableView) {
-            guard !isRenaming else { return }
-            isRenaming = true
+        private func beginEditing(row: Int, in tableView: NSTableView) {
             renamingRow = row
-            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
             tableView.scrollRowToVisible(row)
+            let id = displayedItems[row].id
             // Defer to next run-loop pass so the cell is fully laid out after any preceding reloadData.
             DispatchQueue.main.async { [weak self, weak tableView] in
-                guard let self, let tableView, self.isRenaming else { return }
-                // If the view was removed from the window between scheduling and execution,
-                // abandon the rename — making a windowless text field first-responder is a no-op
-                // and leaves the cell stuck in an editable-but-unfocused state.
-                guard tableView.window != nil else {
-                    self.isRenaming = false
-                    self.renamingRow = -1
+                guard let self, let tableView, self.renamingRow == row,
+                      self.displayedItems[row].id == id, self.editingTextField == nil else { return }
+                guard let text = self.parent.renameText(id) else {
+                    self.finishEditing()
+                    self.syncRows(in: tableView)
                     return
                 }
-                let nameColIdx = tableView.column(withIdentifier: .init("name"))
-                guard nameColIdx >= 0,
-                      let cell = tableView.view(atColumn: nameColIdx, row: row, makeIfNecessary: false) as? NSTableCellView,
-                      let tf = cell.textField else { return }
+                let nameColumn = tableView.column(withIdentifier: .init("name"))
+                guard let window = tableView.window, nameColumn >= 0,
+                      let cell = tableView.view(atColumn: nameColumn, row: row, makeIfNecessary: true) as? NSTableCellView,
+                      let tf = cell.textField else {
+                    self.cancelRename()
+                    return
+                }
+                tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
                 self.editingTextField = tf
                 tf.isEditable = true
                 tf.isBezeled = true
                 tf.bezelStyle = .roundedBezel
                 tf.stringValue = text
                 tf.delegate = self
-                tableView.window?.makeFirstResponder(tf)
+                guard window.makeFirstResponder(tf) else {
+                    self.cancelRename()
+                    return
+                }
                 tf.currentEditor()?.selectAll(nil)
             }
         }
 
-        /// Ends rename editing and resets the cell to its normal (label) appearance.
-        /// Call this before invoking any ViewModel callback so the guard in callbacks fires correctly.
-        func commitEditing(newText: String) {
-            guard isRenaming else { return }
-            isRenaming = false
-            let row = renamingRow
-            renamingRow = -1
-            cleanupTextField()
-            tableView?.window?.makeFirstResponder(tableView)
-            parent.renameText.wrappedValue = newText
-            // Reload the row to show the item's current name (VM will update items via watcher).
-            if row >= 0 { tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0)) }
+        private func commitRename(newText: String) {
+            guard let row = renamingRow else { return }
+            let id = displayedItems[row].id
+            finishEditing()
+            parent.onCommitRename(id, newText)
+            if let tableView { syncRows(in: tableView) }
         }
 
-        func cancelEditing() {
-            guard isRenaming else { return }
-            isRenaming = false
-            let row = renamingRow
-            renamingRow = -1
-            cleanupTextField()
-            tableView?.window?.makeFirstResponder(tableView)
-            // Reload to restore the original item name in the cell.
-            if row >= 0 { tableView?.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0)) }
+        private func cancelRename() {
+            guard let row = renamingRow else { return }
+            let id = displayedItems[row].id
+            finishEditing()
+            parent.onCancelRename(id)
+            if let tableView { syncRows(in: tableView) }
         }
 
-        private func cleanupTextField() {
-            guard let tf = editingTextField else { return }
+        private func finishEditing() {
+            let row = renamingRow
+            renamingRow = nil
+            guard let row, let tf = editingTextField else { return }
+            editingTextField = nil
+            tf.delegate = nil
+            if let editor = tf.currentEditor(), tableView?.window?.firstResponder === editor {
+                tableView?.window?.makeFirstResponder(tableView)
+            }
             tf.isEditable = false
             tf.isBezeled = false
-            tf.delegate = nil
-            editingTextField = nil
+            tf.stringValue = displayedItems[row].name
         }
 
         // MARK: NSTextFieldDelegate — rename text field events
 
         func controlTextDidChange(_ obj: Notification) {
-            guard isRenaming,
-                  let tf = obj.object as? NSTextField,
+            guard let row = renamingRow, let tf = obj.object as? NSTextField,
                   tf === editingTextField else { return }
-            // Keep the ViewModel's renameText in sync so commitRename reads the latest value.
-            parent.renameText.wrappedValue = tf.stringValue
+            parent.onRenameTextChange(displayedItems[row].id, tf.stringValue)
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {
-            guard isRenaming,
-                  let tf = obj.object as? NSTextField,
+            guard let tf = obj.object as? NSTextField,
                   tf === editingTextField else { return }
             // Focus lost without explicit Enter/Escape → treat as commit (Finder-like behaviour).
-            let text = tf.stringValue
-            commitEditing(newText: text)
-            parent.onCommitRename()
+            commitRename(newText: tf.stringValue)
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             guard control === editingTextField else { return false }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-                let text = (control as? NSTextField)?.stringValue ?? ""
-                // Set isRenaming = false before commitEditing so controlTextDidEndEditing
-                // (which fires after we return true) finds isRenaming == false and exits early.
-                commitEditing(newText: text)
-                parent.onCommitRename()
+                commitRename(newText: textView.string)
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
-                cancelEditing()
-                parent.onCancelRename()
+                cancelRename()
                 return true
             }
             return false
@@ -312,16 +331,14 @@ struct FileListNSTableView: NSViewRepresentable {
 
         // MARK: DataSource
 
-        func numberOfRows(in tableView: NSTableView) -> Int { parent.items.count }
+        func numberOfRows(in tableView: NSTableView) -> Int { displayedItems.count }
 
         // MARK: Delegate — cell views
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            // Snapshot to avoid index-out-of-bounds if items mutates between bounds check and access
-            let items = parent.items
-            guard row < items.count else { return nil }
-            let item = items[row]
-            let isCut = parent.cutURLs.contains(item.url)
+            guard displayedItems.indices.contains(row) else { return nil }
+            let item = displayedItems[row]
+            let isCut = displayedCutURLs.contains(item.url)
             let colID = tableColumn?.identifier.rawValue ?? ""
 
             let view: NSView?
@@ -354,7 +371,7 @@ struct FileListNSTableView: NSViewRepresentable {
                 let stack = NSStackView()
                 stack.identifier = NSUserInterfaceItemIdentifier("tagDotsStack")
                 stack.orientation = .horizontal
-                stack.spacing = 3
+                stack.spacing = FileListNSTableView.tagDotSpacing
                 stack.translatesAutoresizingMaskIntoConstraints = false
                 c.addSubview(stack)
                 NSLayoutConstraint.activate([
@@ -366,15 +383,15 @@ struct FileListNSTableView: NSViewRepresentable {
 
             if let stack = cell.subviews.first(where: { $0.identifier?.rawValue == "tagDotsStack" }) as? NSStackView {
                 stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-                for tag in item.tags.prefix(5) {
+                for tag in item.tags.prefix(FileListNSTableView.visibleTagLimit) {
                     let dot = NSView()
                     dot.wantsLayer = true
                     dot.layer?.backgroundColor = tagNSColor(tag).cgColor
-                    dot.layer?.cornerRadius = 4
+                    dot.layer?.cornerRadius = FileListNSTableView.tagDotSize / 2
                     dot.translatesAutoresizingMaskIntoConstraints = false
                     NSLayoutConstraint.activate([
-                        dot.widthAnchor.constraint(equalToConstant: 8),
-                        dot.heightAnchor.constraint(equalToConstant: 8),
+                        dot.widthAnchor.constraint(equalToConstant: FileListNSTableView.tagDotSize),
+                        dot.heightAnchor.constraint(equalToConstant: FileListNSTableView.tagDotSize),
                     ])
                     stack.addArrangedSubview(dot)
                 }
@@ -441,8 +458,8 @@ struct FileListNSTableView: NSViewRepresentable {
             cell.imageView?.image?.size = NSSize(width: 16, height: 16)
             // Only update the name if this cell is not the one currently being renamed —
             // overwriting it would clobber whatever the user has typed so far.
-            if !(isRenaming && renamingRow == tableView.row(for: cell)) {
-                cell.textField?.stringValue = item.name
+            if let textField = cell.textField, textField !== editingTextField {
+                textField.stringValue = item.name
             }
 
             return cell
@@ -485,37 +502,37 @@ struct FileListNSTableView: NSViewRepresentable {
 
         // MARK: Sorting
 
+        func syncSortDescriptors(in tableView: NSTableView) {
+            let current = tableView.sortDescriptors.first
+            guard current?.key != parent.sortKey.rawValue || current?.ascending != parent.sortAscending else { return }
+            tableView.sortDescriptors = [NSSortDescriptor(key: parent.sortKey.rawValue, ascending: parent.sortAscending)]
+        }
+
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
-            guard let descriptor = tableView.sortDescriptors.first, let key = descriptor.key else { return }
-            let sortKey: BrowserViewModel.SortKey
-            switch key {
-            case "name": sortKey = .name
-            case "dateModified": sortKey = .dateModified
-            case "size": sortKey = .size
-            case "kind": sortKey = .kind
-            default: return
-            }
+            guard let descriptor = tableView.sortDescriptors.first,
+                  let key = descriptor.key, let sortKey = BrowserViewModel.SortKey(rawValue: key),
+                  sortKey != parent.sortKey || descriptor.ascending != parent.sortAscending else { return }
             parent.onSortChange(sortKey, descriptor.ascending)
         }
 
         // MARK: Selection
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard let tv = notification.object as? NSTableView else { return }
-            let snapshot = parent.items
+            guard !isSyncingSelection, let tv = notification.object as? NSTableView else { return }
             let urls = Set(tv.selectedRowIndexes.compactMap { row in
-                row < snapshot.count ? snapshot[row].url : nil
+                displayedItems.indices.contains(row) ? displayedItems[row].url : nil
             })
-            parent.selection = urls
+            if parent.selection != urls { parent.selection = urls }
+            let anchorRow = tv.clickedRow >= 0 && tv.selectedRowIndexes.contains(tv.clickedRow) ? tv.clickedRow : tv.selectedRow
+            parent.onSelectionAnchorChanged(displayedItems.indices.contains(anchorRow) ? displayedItems[anchorRow].url : nil)
         }
 
         // MARK: Actions
 
         @objc func doubleClicked(_ sender: NSTableView) {
             let row = sender.clickedRow
-            let snapshot = parent.items
-            guard row >= 0, row < snapshot.count else { return }
-            parent.onOpen(snapshot[row])
+            guard displayedItems.indices.contains(row) else { return }
+            parent.onOpen(displayedItems[row])
         }
 
         // MARK: Context menu
@@ -524,17 +541,16 @@ struct FileListNSTableView: NSViewRepresentable {
             menu.removeAllItems()
             guard let tv = tableView else { return }
             let row = tv.clickedRow
-            // Snapshot to avoid index-out-of-bounds if items mutates between bounds check and access
-            let snapshot = parent.items
+            let canPaste = parent.canPaste()
 
             // Right-click on empty space — show background context menu
-            guard row >= 0, row < snapshot.count else {
+            guard displayedItems.indices.contains(row) else {
                 menu.addItem(withTitle: "New Folder", action: #selector(menuNewFolder(_:)), keyEquivalent: "")
                     .target = self
                 menu.addItem(.separator())
-                let pasteItem = menu.addItem(withTitle: "Paste", action: parent.hasPasteContent ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
+                let pasteItem = menu.addItem(withTitle: "Paste", action: canPaste ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
                 pasteItem.target = self
-                if !parent.hasPasteContent { pasteItem.isEnabled = false }
+                if !canPaste { pasteItem.isEnabled = false }
                 menu.addItem(.separator())
                 let termItem = menu.addItem(withTitle: "Open in Terminal", action: #selector(menuOpenInTerminal(_:)), keyEquivalent: "")
                 termItem.representedObject = parent.currentURL
@@ -542,11 +558,12 @@ struct FileListNSTableView: NSViewRepresentable {
                 return
             }
 
-            let item = snapshot[row]
+            let item = displayedItems[row]
 
             // If the right-clicked item is not already selected, select it exclusively
             if !parent.selection.contains(item.url) {
                 parent.selection = [item.url]
+                parent.onSelectionAnchorChanged(item.url)
             }
 
             menu.addItem(withTitle: "Open", action: #selector(menuOpen(_:)), keyEquivalent: "")
@@ -582,9 +599,8 @@ struct FileListNSTableView: NSViewRepresentable {
                 .representedObject = item.url
             menu.addItem(withTitle: "Copy", action: #selector(menuCopy(_:)), keyEquivalent: "")
                 .representedObject = item.url
-            let pasteItem = menu.addItem(withTitle: "Paste", action: parent.hasPasteContent ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
-            pasteItem.representedObject = item.url
-            if !parent.hasPasteContent { pasteItem.isEnabled = false }
+            let pasteItem = menu.addItem(withTitle: "Paste", action: canPaste ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
+            if !canPaste { pasteItem.isEnabled = false }
             menu.addItem(.separator())
 
             menu.addItem(withTitle: "Duplicate", action: #selector(menuDuplicate(_:)), keyEquivalent: "")
@@ -643,57 +659,40 @@ struct FileListNSTableView: NSViewRepresentable {
 
         @objc func menuRename(_ sender: NSMenuItem) {
             guard let url = sender.representedObject as? URL,
+                  let row = displayedItems.firstIndex(where: { $0.url == url }),
                   let item = parent.items.first(where: { $0.url == url }) else { return }
             // Ensure row is selected before starting rename
-            if let row = parent.items.firstIndex(where: { $0.id == item.id }) {
-                tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            }
-            parent.selection = [item.url]
-            // Trigger rename via the ViewModel (goes through SwiftUI → updateNSView → beginEditing)
-            // We do this by calling the parent's onOpen equivalent — but rename has no direct callback.
-            // Instead, update the selection so the keyboard shortcut handler in ContentView can fire.
-            // For context menu rename, we call the view model indirectly via a notification or
-            // use a dedicated callback. For now, simulate pressing Return by calling startRename
-            // directly through the existing onOpen pattern — but we need a rename callback.
-            // Since FileListView wires onCommitRename/onCancelRename, we need startRename from VM.
-            // This is handled via the same path: selection is updated, user presses Return.
-            // As a direct fix, post a notification that ContentView can observe.
-            NotificationCenter.default.post(
-                name: .renameRequestedForURL,
-                object: nil,
-                userInfo: ["url": url]
-            )
+            tableView?.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            parent.selection = [url]
+            parent.onSelectionAnchorChanged(url)
+            parent.onRename(item)
         }
 
         @objc func menuTrash(_ sender: NSMenuItem) {
             guard let url = sender.representedObject as? URL,
                   let item = parent.items.first(where: { $0.url == url }) else { return }
-            parent.onTrash(item)
+            let selection = parent.selection
+            parent.onTrash(selection.contains(url) ? parent.items.filter { selection.contains($0.url) } : [item])
         }
 
         @objc func menuGetInfo(_ sender: NSMenuItem) {
-            guard let url = sender.representedObject as? URL else { return }
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+            guard let url = sender.representedObject as? URL,
+                  let item = parent.items.first(where: { $0.url == url }) else { return }
+            ExplorerFileInfo.show(for: item, in: tableView?.window)
         }
 
         @objc func menuOpenWith(_ sender: NSMenuItem) {
             guard let urls = sender.representedObject as? [URL], urls.count == 2 else { return }
-            NSWorkspace.shared.open([urls[0]], withApplicationAt: urls[1],
-                                    configuration: NSWorkspace.OpenConfiguration(),
-                                    completionHandler: nil)
+            FileOpening.open([urls[0]], with: urls[1], onError: parent.onError)
         }
 
         @objc func menuOpenInTerminal(_ sender: NSMenuItem) {
-            guard let url = sender.representedObject as? URL,
-                  let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
-            else { return }
-            NSWorkspace.shared.open([url], withApplicationAt: terminalURL,
-                                    configuration: NSWorkspace.OpenConfiguration(),
-                                    completionHandler: nil)
+            guard let url = sender.representedObject as? URL else { return }
+            FileOpening.openTerminal(at: url, onError: parent.onError)
         }
 
         @objc func menuNewFolder(_ sender: NSMenuItem) {
-            NotificationCenter.default.post(name: .newFolderRequested, object: nil)
+            parent.onNewFolder()
         }
 
         @objc func menuCut(_ sender: NSMenuItem) {
@@ -743,47 +742,59 @@ struct FileListNSTableView: NSViewRepresentable {
         // MARK: Drag Source
 
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-            let snapshot = parent.items
-            guard row < snapshot.count else { return nil }
-            let item = snapshot[row]
-            let pbItem = NSPasteboardItem()
-            pbItem.setString(item.url.absoluteString, forType: .fileURL)
-            return pbItem
+            guard displayedItems.indices.contains(row) else { return nil }
+            let item = NSPasteboardItem()
+            item.setString(displayedItems[row].url.absoluteString, forType: .fileURL)
+            item.setData(Data(), forType: .init(GridFileTransfer.internalType))
+            return item
         }
 
         // MARK: Drop Destination
 
         func tableView(_ tableView: NSTableView, validateDrop info: any NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
-            let snapshot = parent.items
-            // If dropping onto a directory row, allow it; otherwise redirect to end of list
-            if dropOperation == .on, row >= 0, row < snapshot.count, snapshot[row].isDirectory {
-                return info.draggingSourceOperationMask.contains(.move) ? .move : .copy
+            validatedDrop = nil
+            let mask = info.draggingSourceOperationMask
+            let transfer: DropTransfer
+            if mask.contains(.move) {
+                transfer = .move
+            } else if mask.contains(.copy) {
+                transfer = .copy
+            } else {
+                return []
             }
-            // Disallow drop onto non-directory rows; redirect to .above (end of list)
-            tableView.setDropRow(-1, dropOperation: .on)
-            return info.draggingSourceOperationMask.contains(.move) ? .move : .copy
+            let folder = dropDirectory(at: row, operation: dropOperation)
+            let destination = folder ?? parent.currentURL
+            guard !dropURLs(from: info, to: destination).isEmpty else { return [] }
+
+            if folder == nil { tableView.setDropRow(-1, dropOperation: .on) }
+            validatedDrop = ValidatedDrop(sequenceNumber: info.draggingSequenceNumber, destination: destination, transfer: transfer)
+            return transfer.operation
         }
 
         func tableView(_ tableView: NSTableView, acceptDrop info: any NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
-            let snapshot = parent.items
-            let destination: URL
-            if dropOperation == .on, row >= 0, row < snapshot.count, snapshot[row].isDirectory {
-                destination = snapshot[row].url
-            } else {
-                // Drop onto background — move into the current directory (no-op move but handled by caller)
-                return false
-            }
+            defer { validatedDrop = nil }
+            let destination = dropDirectory(at: row, operation: dropOperation) ?? parent.currentURL
+            guard let drop = validatedDrop, drop.sequenceNumber == info.draggingSequenceNumber,
+                  drop.destination == destination,
+                  info.draggingSourceOperationMask.contains(drop.transfer.operation) else { return false }
 
-            var urls: [URL] = []
-            info.enumerateDraggingItems(options: [], for: tableView, classes: [NSPasteboardItem.self], searchOptions: [:]) { draggingItem, _, _ in
-                guard let pbItem = draggingItem.item as? NSPasteboardItem,
-                      let str = pbItem.string(forType: .fileURL),
-                      let url = URL(string: str) else { return }
-                urls.append(url)
-            }
+            let urls = dropURLs(from: info, to: destination)
             guard !urls.isEmpty else { return false }
-            parent.onMove(urls, destination)
+            parent.onDrop(urls, destination, drop.transfer)
             return true
+        }
+
+        private func dropDirectory(at row: Int, operation: NSTableView.DropOperation) -> URL? {
+            guard operation == .on, displayedItems.indices.contains(row),
+                  displayedItems[row].isDirectory, !displayedItems[row].isPackage else { return nil }
+            return displayedItems[row].url
+        }
+
+        private func dropURLs(from info: any NSDraggingInfo, to destination: URL) -> [URL] {
+            let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+            let destinationPath = destination.standardizedFileURL.pathComponents
+            guard urls.allSatisfy({ !destinationPath.starts(with: $0.standardizedFileURL.pathComponents) }) else { return [] }
+            return urls
         }
     }
 }

@@ -5,7 +5,7 @@ extension URL {
     var displayPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let p = self.path
-        if p.hasPrefix(home) {
+        if p == home || p.hasPrefix(home + "/") {
             return "~" + p.dropFirst(home.count)
         }
         return p

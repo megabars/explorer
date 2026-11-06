@@ -6,201 +6,295 @@ struct FileGridView: View {
     let navigation: NavigationState
     let sidebar: SidebarViewModel
 
+    @FocusState private var isGridFocused: Bool
+    @State private var gridWidth: CGFloat = 0
+    @State private var proposedTransfer: GridFileTransfer?
+
     private let columns = [GridItem(.adaptive(minimum: 80, maximum: 100), spacing: 8)]
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(browser.sortedItems) { item in
-                    FileIconCell(
-                        item: item,
-                        isSelected: browser.selection.contains(item.url),
-                        isCut: browser.cutURLs.contains(item.url),
-                        isRenaming: browser.renamingItem?.id == item.id,
-                        renameText: Binding(
-                            get: { browser.renameText },
-                            set: { browser.renameText = $0 }
-                        ),
-                        onCommitRename: { browser.commitRename(navigation: navigation) },
-                        onCancelRename: { browser.cancelRename() }
-                    )
-                    // Double-tap must be declared before single-tap so SwiftUI tries it first.
-                    .onTapGesture(count: 2) {
-                        browser.open(item, navigation: navigation)
-                    }
-                    .onTapGesture {
-                        let flags = NSApp.currentEvent?.modifierFlags ?? []
-                        if flags.contains(.command) {
-                            if browser.selection.contains(item.url) {
-                                browser.selection.remove(item.url)
-                            } else {
-                                browser.selection.insert(item.url)
-                            }
-                            browser.lastSelectedURL = item.url
-                        } else if flags.contains(.shift), let anchor = browser.lastSelectedURL {
-                            let allItems = browser.sortedItems
-                            if let anchorIdx = allItems.firstIndex(where: { $0.url == anchor }),
-                               let targetIdx = allItems.firstIndex(where: { $0.url == item.url }) {
-                                let range = min(anchorIdx, targetIdx)...max(anchorIdx, targetIdx)
-                                browser.selection = Set(allItems[range].map(\.url))
-                            } else {
-                                browser.selection = [item.url]
-                                browser.lastSelectedURL = item.url
-                            }
-                        } else {
-                            browser.selection = [item.url]
-                            browser.lastSelectedURL = item.url
-                        }
-                    }
-                    .contextMenu {
-                        Button("Open") {
-                            browser.open(item, navigation: navigation)
-                        }
-                        if !item.isDirectory && !item.isPackage {
-                            let apps = browser.openWithApps(for: item.url)
-                            if !apps.isEmpty {
-                                let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: item.url)
-                                Menu("Open With") {
-                                    ForEach(apps, id: \.self) { appURL in
-                                        let name = (Bundle(url: appURL)?.infoDictionary?["CFBundleName"] as? String)
-                                                   ?? appURL.deletingPathExtension().lastPathComponent
-                                        Button(appURL == defaultApp ? "\(name) (default)" : name) {
-                                            NSWorkspace.shared.open([item.url], withApplicationAt: appURL,
-                                                                    configuration: NSWorkspace.OpenConfiguration(),
-                                                                    completionHandler: nil)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Divider()
-                        Button("Cut") { browser.cut() }
-                        Button("Copy") { browser.copy() }
-                        Button("Paste") { browser.paste(into: navigation.currentURL) }
-                            .disabled(browser.clipboardItems.isEmpty)
-                        Divider()
-                        Button("Duplicate") { browser.duplicate() }
-                        Button("Compress...") { browser.compress(currentURL: navigation.currentURL) }
-                        Divider()
-                        Button("Rename") {
-                            browser.startRename(item)
-                        }
-                        Divider()
-                        Button("Move to Trash") {
-                            browser.trash(items: [item])
-                        }
-                        Button("Get Info") {
-                            NSWorkspace.shared.activateFileViewerSelecting([item.url])
-                        }
-                        // Tags submenu
-                        Menu("Tags") {
-                            ForEach(["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray"], id: \.self) { tagName in
-                                Button {
-                                    var tags = item.tags
-                                    if tags.contains(tagName) {
-                                        tags.removeAll { $0 == tagName }
-                                    } else {
-                                        tags.append(tagName)
-                                    }
-                                    browser.setTags(tags, for: item)
-                                } label: {
-                                    HStack {
-                                        Text(tagName)
-                                        if item.tags.contains(tagName) {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                            Divider()
-                            Button("None") { browser.setTags([], for: item) }
-                        }
-                        if item.isDirectory {
-                            Divider()
-                            Button("Add to Sidebar") {
-                                sidebar.addFavorite(url: item.url)
-                            }
-                            Divider()
-                            Button("Open in Terminal") {
-                                guard let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return }
-                                NSWorkspace.shared.open([item.url], withApplicationAt: terminalURL,
-                                                        configuration: NSWorkspace.OpenConfiguration(),
-                                                        completionHandler: nil)
-                            }
-                        }
-                    }
-                    .onDrag {
-                        NSItemProvider(object: item.url as NSURL)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(browser.sortedItems) { item in
+                        icon(for: item)
                     }
                 }
+                .padding(12)
+                .background(GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { gridWidth = geometry.size.width }
+                        .onChange(of: geometry.size.width) { _, width in gridWidth = width }
+                })
             }
-            .padding(12)
-        }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-            handleDrop(providers: providers, into: navigation.currentURL)
-        }
-        .onKeyPress(.leftArrow) {
-            moveSelection(by: -1)
-            return .handled
-        }
-        .onKeyPress(.rightArrow) {
-            moveSelection(by: 1)
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            moveSelection(by: -columnsPerRow)
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            moveSelection(by: columnsPerRow)
-            return .handled
-        }
-        .contextMenu {
-            Button("New Folder") {
-                NotificationCenter.default.post(name: .newFolderRequested, object: nil)
+            .focusable()
+            .focused($isGridFocused)
+            .focusEffectDisabled()
+            .onAppear {
+                isGridFocused = browser.renamingItem == nil
+                if let id = browser.renamingItem?.id { proxy.scrollTo(id, anchor: .center) }
             }
-            Divider()
-            Button("Paste") {
-                browser.paste(into: navigation.currentURL)
+            .onChange(of: browser.renamingItem?.id) { _, id in
+                if let id {
+                    isGridFocused = false
+                    proxy.scrollTo(id, anchor: .center)
+                }
             }
-            .disabled(browser.clipboardItems.isEmpty)
-            Divider()
-            Button("Open in Terminal") {
-                guard let terminalURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else { return }
-                NSWorkspace.shared.open([navigation.currentURL], withApplicationAt: terminalURL,
-                                        configuration: NSWorkspace.OpenConfiguration(),
-                                        completionHandler: nil)
+            .onChange(of: browser.lastSelectedURL) { _, url in
+                if let url, isGridFocused { proxy.scrollTo(url) }
+            }
+            .onDrop(of: [.fileURL], delegate: GridFileDrop(proposedTransfer: $proposedTransfer) { providers, transfer in
+                handleDrop(providers: providers, into: navigation.currentURL, transfer: transfer)
+            })
+            .onKeyPress(.leftArrow, phases: [.down, .repeat]) { key in
+                guard browser.renamingItem == nil, !ExplorerCommand.isEditingText else { return .ignored }
+                moveSelection(by: -1, extending: key.modifiers.contains(.shift))
+                return .handled
+            }
+            .onKeyPress(.rightArrow, phases: [.down, .repeat]) { key in
+                guard browser.renamingItem == nil, !ExplorerCommand.isEditingText else { return .ignored }
+                moveSelection(by: 1, extending: key.modifiers.contains(.shift))
+                return .handled
+            }
+            .onKeyPress(.upArrow, phases: [.down, .repeat]) { key in
+                guard browser.renamingItem == nil, !ExplorerCommand.isEditingText else { return .ignored }
+                moveSelection(by: -columnsPerRow, extending: key.modifiers.contains(.shift))
+                return .handled
+            }
+            .onKeyPress(.downArrow, phases: [.down, .repeat]) { key in
+                guard browser.renamingItem == nil, !ExplorerCommand.isEditingText else { return .ignored }
+                moveSelection(by: columnsPerRow, extending: key.modifiers.contains(.shift))
+                return .handled
+            }
+            .contextMenu {
+                Button("New Folder") {
+                    browser.newFolder(in: navigation.currentURL)
+                }
+                Divider()
+                Button("Paste") {
+                    browser.paste(into: navigation.currentURL)
+                }
+                .disabled(!browser.canPaste)
+                Divider()
+                Button("Open in Terminal") {
+                    FileOpening.openTerminal(at: navigation.currentURL) { browser.errorMessage = $0 }
+                }
             }
         }
     }
 
-    /// Approximate columns per row — matches the adaptive grid (minimum: 80).
-    private var columnsPerRow: Int { max(1, Int(NSScreen.main?.frame.width ?? 800) / 100) }
-
-    private func moveSelection(by offset: Int) {
-        let allItems = browser.sortedItems
-        guard !allItems.isEmpty else { return }
-        let currentIndex: Int
-        if let selectedURL = browser.selection.first,
-           let idx = allItems.firstIndex(where: { $0.url == selectedURL }) {
-            currentIndex = idx
-        } else {
-            currentIndex = -1
+    private func icon(for item: FileItem) -> some View {
+        FileIconCell(
+            item: item,
+            isSelected: browser.selection.contains(item.url),
+            isCut: browser.cutURLs.contains(item.url),
+            isRenaming: browser.renamingItem?.id == item.id,
+            renameText: Binding(
+                get: { browser.renamingItem?.id == item.id ? browser.renameText : item.name },
+                set: { text in
+                    guard browser.renamingItem?.id == item.id else { return }
+                    browser.renameText = text
+                }
+            ),
+            onCommitRename: { restoreFocus in
+                guard browser.renamingItem?.id == item.id else { return }
+                browser.commitRename(navigation: navigation)
+                if restoreFocus { isGridFocused = true }
+            },
+            onCancelRename: {
+                guard browser.renamingItem?.id == item.id else { return }
+                browser.cancelRename()
+                isGridFocused = true
+            }
+        )
+        // Double-tap must be declared before single-tap so SwiftUI tries it first.
+        .onTapGesture(count: 2) {
+            browser.open(item, navigation: navigation)
         }
-        let newIndex = max(0, min(allItems.count - 1, currentIndex + offset))
-        let item = allItems[newIndex]
+        .onTapGesture { select(item) }
+        .contextMenu { itemMenu(for: item) }
+        .onDrag {
+            // Legacy SwiftUI advertises copy only; do not offer the native-list move marker.
+            return NSItemProvider(object: item.url as NSURL)
+        }
+        .onDrop(of: [.fileURL], delegate: GridFileDrop(proposedTransfer: $proposedTransfer, isEnabled: item.isDirectory && !item.isPackage) { providers, transfer in
+            return handleDrop(providers: providers, into: item.url, transfer: transfer)
+        })
+    }
+
+    private func select(_ item: FileItem) {
+        if browser.renamingItem?.id != item.id { isGridFocused = true }
+        keyboardAnchor = nil
+        keyboardCursor = nil
+        let flags = NSApp.currentEvent?.modifierFlags ?? []
+        if flags.contains(.command) {
+            if browser.selection.contains(item.url) {
+                browser.selection.remove(item.url)
+            } else {
+                browser.selection.insert(item.url)
+            }
+            browser.lastSelectedURL = item.url
+        } else if flags.contains(.shift), let anchor = browser.lastSelectedURL {
+            let allItems = browser.sortedItems
+            if let anchorIdx = allItems.firstIndex(where: { $0.url == anchor }),
+               let targetIdx = allItems.firstIndex(where: { $0.url == item.url }) {
+                let range = min(anchorIdx, targetIdx)...max(anchorIdx, targetIdx)
+                browser.selection = Set(allItems[range].map(\.url))
+            } else {
+                browser.selection = [item.url]
+                browser.lastSelectedURL = item.url
+            }
+        } else {
+            browser.selection = [item.url]
+            browser.lastSelectedURL = item.url
+        }
+    }
+
+    @ViewBuilder
+    private func itemMenu(for item: FileItem) -> some View {
+        Button("Open") {
+            browser.open(item, navigation: navigation)
+        }
+        if !item.isDirectory && !item.isPackage {
+            let apps = browser.openWithApps(for: item.url)
+            if !apps.isEmpty {
+                let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: item.url)
+                Menu("Open With") {
+                    ForEach(apps, id: \.self) { appURL in
+                        let name = (Bundle(url: appURL)?.infoDictionary?["CFBundleName"] as? String)
+                                   ?? appURL.deletingPathExtension().lastPathComponent
+                        Button(appURL == defaultApp ? "\(name) (default)" : name) {
+                            FileOpening.open([item.url], with: appURL) { browser.errorMessage = $0 }
+                        }
+                    }
+                }
+            }
+        }
+        Divider()
+        Button("Cut") {
+            selectForContextAction(item)
+            browser.cut()
+        }
+        Button("Copy") {
+            selectForContextAction(item)
+            browser.copy()
+        }
+        Button("Paste") { browser.paste(into: navigation.currentURL) }
+            .disabled(!browser.canPaste)
+        Divider()
+        Button("Duplicate") {
+            selectForContextAction(item)
+            browser.duplicate()
+        }
+        Button("Compress...") {
+            selectForContextAction(item)
+            browser.compress(currentURL: navigation.currentURL)
+        }
+        Divider()
+        Button("Rename") {
+            browser.startRename(item)
+        }
+        Divider()
+        Button("Move to Trash") {
+            selectForContextAction(item)
+            browser.trash(items: browser.selectedItems)
+        }
+        Button("Get Info") {
+            ExplorerFileInfo.show(for: item)
+        }
+        // Tags submenu
+        Menu("Tags") {
+            ForEach(["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray"], id: \.self) { tagName in
+                Button {
+                    var tags = item.tags
+                    if tags.contains(tagName) {
+                        tags.removeAll { $0 == tagName }
+                    } else {
+                        tags.append(tagName)
+                    }
+                    browser.setTags(tags, for: item)
+                } label: {
+                    HStack {
+                        Text(tagName)
+                        if item.tags.contains(tagName) {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button("None") { browser.setTags([], for: item) }
+        }
+        if item.isDirectory {
+            Divider()
+            Button("Add to Sidebar") {
+                sidebar.addFavorite(url: item.url)
+            }
+            Divider()
+            Button("Open in Terminal") {
+                FileOpening.openTerminal(at: item.url) { browser.errorMessage = $0 }
+            }
+        }
+    }
+
+    private var columnsPerRow: Int { GridNavigation.columns(for: gridWidth) }
+
+    private func selectForContextAction(_ item: FileItem) {
+        keyboardAnchor = nil
+        keyboardCursor = nil
+        guard !browser.selection.contains(item.url) else { return }
         browser.selection = [item.url]
         browser.lastSelectedURL = item.url
     }
 
-    private func handleDrop(providers: [NSItemProvider], into destination: URL) -> Bool {
-        // Check if Option key is held — if so, copy instead of move
-        let shouldCopy = NSEvent.modifierFlags.contains(.option)
-        var handled = false
+    @State private var keyboardAnchor: URL?
+    @State private var keyboardCursor: URL?
+
+    private func moveSelection(by offset: Int, extending: Bool) {
+        let allItems = browser.sortedItems
+        guard !allItems.isEmpty else { return }
+        if keyboardCursor != browser.lastSelectedURL || keyboardCursor.map({ !browser.selection.contains($0) }) == true {
+            keyboardAnchor = nil
+            keyboardCursor = nil
+        }
+        let selectedIndex = GridNavigation.selectedIndex(
+            items: allItems.map(\.url), selection: browser.selection,
+            preferred: extending ? keyboardCursor ?? browser.lastSelectedURL : browser.lastSelectedURL
+        )
+        let newIndex = GridNavigation.nextIndex(current: selectedIndex, offset: offset, count: allItems.count)
+        let item = allItems[newIndex]
+        if extending, let selectedIndex {
+            let anchor = keyboardAnchor.flatMap { url in allItems.firstIndex { $0.url == url } } ?? selectedIndex
+            keyboardAnchor = allItems[anchor].url
+            browser.selection = Set(allItems[min(anchor, newIndex)...max(anchor, newIndex)].map(\.url))
+        } else {
+            keyboardAnchor = nil
+            browser.selection = [item.url]
+        }
+        keyboardCursor = item.url
+        browser.lastSelectedURL = item.url
+    }
+
+    private func handleDrop(providers: [NSItemProvider], into destination: URL, transfer: GridFileTransfer) -> Bool {
+        guard !providers.isEmpty else { return false }
+        let shouldCopy = transfer == .copy
         for provider in providers {
-            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, _ in
-                guard let data = item as? Data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+            provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) { item, error in
+                let url: URL?
+                if let value = item as? URL {
+                    url = value
+                } else if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else {
+                    url = nil
+                }
+                guard error == nil, let url, url.isFileURL, url.path.hasPrefix("/") else {
+                    let reason = error?.localizedDescription ?? "The drag did not provide an absolute file URL."
+                    Task { @MainActor in
+                        browser.errorMessage = "Could not read a dropped file. \(reason)"
+                    }
+                    return
+                }
                 Task { @MainActor in
                     do {
                         if shouldCopy {
@@ -219,9 +313,8 @@ struct FileGridView: View {
                     }
                 }
             }
-            handled = true
         }
-        return handled
+        return true
     }
 }
 
@@ -231,10 +324,8 @@ private struct FileIconCell: View {
     var isCut: Bool = false
     var isRenaming: Bool = false
     var renameText: Binding<String> = .constant("")
-    var onCommitRename: () -> Void = {}
+    var onCommitRename: (Bool) -> Void = { _ in }
     var onCancelRename: () -> Void = {}
-
-    @FocusState private var isRenameFocused: Bool
 
     var body: some View {
         VStack(spacing: 4) {
@@ -244,18 +335,16 @@ private struct FileIconCell: View {
                 .opacity(isCut ? 0.4 : 1.0)
 
             if isRenaming {
-                TextField("", text: renameText)
-                    .font(.system(size: 11))
-                    .multilineTextAlignment(.center)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 90)
-                    .focused($isRenameFocused)
-                    .onSubmit { onCommitRename() }
-                    .onKeyPress(.escape) {
-                        onCancelRename()
-                        return .handled
-                    }
-                    .onAppear { isRenameFocused = true }
+                FocusedTextField(
+                    text: renameText.wrappedValue,
+                    mode: .rename(onFocusLost: { onCommitRename(false) }),
+                    showsPopover: false,
+                    focusRequest: 0,
+                    onCommit: { onCommitRename(true) },
+                    onCancel: onCancelRename,
+                    onTextChange: { renameText.wrappedValue = $0 }
+                )
+                .frame(width: 90, height: 22)
             } else {
                 Text(item.name)
                     .font(.system(size: 11))

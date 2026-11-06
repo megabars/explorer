@@ -20,13 +20,20 @@ Finder lacks an editable address bar. Explorer adds one — click anywhere on th
 ## Requirements
 
 - macOS 14 (Sonoma) or later
-- Xcode 15+ or Swift 6 toolchain
+- Xcode 16+ or Swift 6 toolchain
 
 ## Build & Run
 
 ```bash
 # Build and launch as a proper .app bundle
 bash build_app.sh
+```
+
+SwiftPM build options can be passed through to the script. For example, if the
+selected SDK is missing the SwiftUI macro plugin, use a compatible installed SDK:
+
+```bash
+bash build_app.sh --build-system native --sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
 ```
 
 Or open in Xcode:
@@ -40,7 +47,37 @@ open Package.swift
 Swift 6 + SwiftUI + AppKit. No Electron, no JVM — native macOS binary.
 
 - `@Observable` + `@MainActor` view models
-- `actor`-isolated file system service
-- `DispatchSource` (kqueue) for live directory watching
+- Concurrent filesystem reads with actor-isolated writes
+- FSEvents plus `DispatchSource` (kqueue) for live directory and file updates
 - `NSTableView` via `NSViewRepresentable` for the list view
 - `NSTextField` via `NSViewRepresentable` for the address bar editing state
+
+## Tests
+
+The Swift Testing suite uses temporary files, private named pasteboards, and
+simulated Trash responses. It covers archive safety, restore conflicts, partial
+failures, directory watching, navigation races, filtering, clipboard operations,
+sorting, AppKit row updates and drag/drop, focused-window/text commands, icon navigation,
+Finder tag colors, symlinks, favorites persistence, and path completion.
+
+```bash
+swift test --disable-xctest
+```
+
+Run in a normal macOS user session: AppKit, pasteboard, LaunchServices, and
+FSEvents tests need access to their system services. A process sandbox can block
+these services even when compilation succeeds.
+
+For a Command Line Tools installation that does not discover Swift Testing
+automatically, the following command explicitly supplies its bundled framework
+and macro plugin. Adjust the SDK path to a compatible SDK installed locally:
+
+```bash
+swift test --build-system native --disable-xctest \
+  --sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+  -Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks \
+  -Xswiftc -plugin-path \
+  -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing \
+  -Xlinker -rpath \
+  -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks
+```

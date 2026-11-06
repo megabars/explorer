@@ -3,50 +3,69 @@ import Foundation
 actor FileSystemService {
     static let shared = FileSystemService()
 
-    private let resourceKeys: Set<URLResourceKey> = [
+    typealias DirectoryContents = @Sendable (URL, [URLResourceKey], Bool) throws -> [URL]
+
+    private nonisolated let directoryContents: DirectoryContents
+    private static let entryKeys: Set<URLResourceKey> = [
         .nameKey,
         .isDirectoryKey,
-        .isPackageKey,
         .isHiddenKey,
         .isSymbolicLinkKey,
         .fileSizeKey,
         .contentModificationDateKey,
-        .creationDateKey,
-        .localizedTypeDescriptionKey,
-        .tagNamesKey
+        .creationDateKey
     ]
 
-    func listDirectory(at url: URL, showHidden: Bool = false) throws -> [FileItem] {
-        let options: FileManager.DirectoryEnumerationOptions = showHidden ? [] : [.skipsHiddenFiles]
-        let contents = try FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: Array(resourceKeys),
-            options: options
-        )
+    init(directoryContents: DirectoryContents? = nil) {
+        self.directoryContents = directoryContents ?? { url, keys, showHidden in
+            try FileManager.default.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: keys,
+                options: showHidden ? [] : [.skipsHiddenFiles]
+            )
+        }
+    }
+
+    nonisolated func listDirectory(at url: URL, showHidden: Bool = false) async throws -> [FileItem] {
+        try Task.checkCancellation()
+        let result = await Self.performRead {
+            Result { try self.readDirectory(at: url, showHidden: showHidden) }
+        }
+        return try result.get()
+    }
+
+    private nonisolated func readDirectory(at url: URL, showHidden: Bool) throws -> [FileItem] {
+        let contents = try directoryContents(url, Array(Self.entryKeys), showHidden)
         // compactMap intentionally drops items whose metadata cannot be read (e.g. TOCTOU races,
         // permission errors on individual files) to keep the listing partial rather than failing entirely.
-        return contents.compactMap { makeFileItem(from: $0) }
+        return contents.compactMap { Self.makeFileItem(from: $0) }
             .sorted { a, b in
                 if a.isDirectory != b.isDirectory { return a.isDirectory }
                 return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
             }
     }
 
-    private func makeFileItem(from url: URL) -> FileItem? {
-        guard let values = try? url.resourceValues(forKeys: resourceKeys) else { return nil }
+    private static func makeFileItem(from url: URL) -> FileItem? {
+        guard let values = try? url.resourceValues(forKeys: entryKeys) else { return nil }
+        let isSymlink = values.isSymbolicLink ?? false
+        let target = isSymlink ? url.resolvingSymlinksInPath() : url
+        let isDirectory = isSymlink ? fileStatus(at: target).isDirectory : values.isDirectory ?? false
+        // Kind and tags are optional metadata. A LaunchServices or xattr error should not hide the entry.
+        let kind = try? url.resourceValues(forKeys: [.localizedTypeDescriptionKey]).localizedTypeDescription
+        let tags = try? url.resourceValues(forKeys: [.tagNamesKey]).tagNames
         return FileItem(
             id: url,
             url: url,
             name: values.name ?? url.lastPathComponent,
-            isDirectory: values.isDirectory ?? false,
-            isPackage: values.isPackage ?? false,
+            isDirectory: isDirectory,
+            isPackage: isDirectory && (try? target.resourceValues(forKeys: [.isPackageKey]).isPackage) == true,
             isHidden: values.isHidden ?? false,
-            isSymlink: values.isSymbolicLink ?? false,
+            isSymlink: isSymlink,
             fileSize: values.fileSize.map { Int64($0) },
             contentModificationDate: values.contentModificationDate,
             creationDate: values.creationDate,
-            kind: values.localizedTypeDescription ?? "Unknown",
-            tags: values.tagNames ?? []
+            kind: kind ?? "Unknown",
+            tags: tags ?? []
         )
     }
 
@@ -61,37 +80,54 @@ actor FileSystemService {
     }
 
     func copy(items: [FileItem], to destination: URL) throws {
+        let destination = destination.resolvingSymlinksInPath()
+        let ancestors = directoryAncestors(of: destination)
         for item in items {
-            let base = (item.name as NSString).deletingPathExtension
-            let ext = (item.name as NSString).pathExtension
-            var candidate = destination.appendingPathComponent(item.name)
-            var counter = 2
-            // Retry with incremented counter on conflict (avoids TOCTOU from pre-checking existence).
-            // Guard against degenerate cases with a maximum iteration limit.
-            while true {
-                do {
-                    try FileManager.default.copyItem(at: item.url, to: candidate)
-                    break
-                } catch let error as NSError
-                    where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
-                    guard counter <= 1000 else {
-                        throw NSError(
-                            domain: NSCocoaErrorDomain,
-                            code: NSFileWriteFileExistsError,
-                            userInfo: [NSLocalizedDescriptionKey:
-                                "Could not copy \"\(item.name)\": too many conflicting files in destination."]
-                        )
+            guard let identity = directoryIdentity(at: item.url, followLink: false),
+                  ancestors.contains(identity) else { continue }
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSLocalizedDescriptionKey: "Cannot copy “\(item.url.lastPathComponent)” into itself or one of its subfolders."
+            ])
+        }
+        var copied = 0
+        do {
+            for item in items {
+                var candidate = destination.appendingPathComponent(item.name)
+                var counter = 2
+                // Retry with incremented counter on conflict (avoids TOCTOU from pre-checking existence).
+                while true {
+                    do {
+                        try FileManager.default.copyItem(at: item.url, to: candidate)
+                        copied += 1
+                        break
+                    } catch let error as NSError
+                        where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+                        guard counter <= 1000 else {
+                            throw CocoaError(.fileWriteFileExists, userInfo: [
+                                NSLocalizedDescriptionKey: "Could not copy “\(item.name)”: too many conflicting files in destination."
+                            ])
+                        }
+                        let newName = name(item.name, adding: " \(counter)")
+                        candidate = destination.appendingPathComponent(newName)
+                        counter += 1
                     }
-                    let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
-                    candidate = destination.appendingPathComponent(newName)
-                    counter += 1
                 }
             }
+        } catch {
+            guard copied > 0 else { throw error }
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSLocalizedDescriptionKey: "Copied \(copied) of \(items.count) items.\n\(error.localizedDescription)",
+                NSUnderlyingErrorKey: error
+            ])
         }
     }
 
     /// Returns completions for the given partial path, filtered by directory and optionally hidden files.
-    func completions(for partialPath: String, showHidden: Bool = false) -> [URL] {
+    nonisolated func completions(for partialPath: String, showHidden: Bool = false) async -> [URL] {
+        await Self.performRead { self.directoryCompletions(for: partialPath, showHidden: showHidden) }
+    }
+
+    private nonisolated func directoryCompletions(for partialPath: String, showHidden: Bool) -> [URL] {
         let expanded = (partialPath as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
         let parentURL: URL
@@ -105,53 +141,65 @@ actor FileSystemService {
             prefix = url.lastPathComponent
         }
 
-        let options: FileManager.DirectoryEnumerationOptions = showHidden ? [] : [.skipsHiddenFiles]
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: parentURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: options
-        ) else { return [] }
+        guard let contents = try? directoryContents(parentURL, [.isDirectoryKey, .isSymbolicLinkKey], showHidden)
+        else { return [] }
 
         return contents
             .filter { prefix.isEmpty || $0.lastPathComponent.lowercased().hasPrefix(prefix.lowercased()) }
-            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-            // Filter out symlinks whose targets are not readable (broken or permission-denied symlinks)
             .filter { url in
-                guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true else { return true }
-                return FileManager.default.isReadableFile(atPath: url.resolvingSymlinksInPath().path)
+                guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else {
+                    return false
+                }
+                if values.isSymbolicLink == true {
+                    let target = url.resolvingSymlinksInPath()
+                    return Self.fileStatus(at: target).isDirectory && FileManager.default.isReadableFile(atPath: target.path)
+                }
+                return values.isDirectory == true
             }
             .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
             .prefix(12)
             .map { $0 }
     }
 
-    func exists(at url: URL) -> Bool {
-        FileManager.default.fileExists(atPath: url.path)
+    nonisolated func exists(at url: URL) async -> Bool {
+        await Self.performRead { FileManager.default.fileExists(atPath: url.path) }
     }
 
-    func isReadable(at url: URL) -> Bool {
-        FileManager.default.isReadableFile(atPath: url.path)
+    nonisolated func isReadable(at url: URL) async -> Bool {
+        await Self.performRead { FileManager.default.isReadableFile(atPath: url.path) }
     }
 
     /// Returns the display name for a volume URL, or nil if not a volume root.
-    func volumeName(for url: URL) -> String? {
-        try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName
+    nonisolated func volumeName(for url: URL) async -> String? {
+        await Self.performRead { try? url.resourceValues(forKeys: [.volumeNameKey]).volumeName }
     }
 
     /// Returns existence and directory status in a single syscall, eliminating ambiguity
     /// between "does not exist" and "exists but is not a directory".
-    func itemStatus(at url: URL) -> (exists: Bool, isDirectory: Bool) {
+    nonisolated func itemStatus(at url: URL) async -> (exists: Bool, isDirectory: Bool) {
+        await Self.performRead { Self.fileStatus(at: url) }
+    }
+
+    private static func fileStatus(at url: URL) -> (exists: Bool, isDirectory: Bool) {
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         return (exists, exists && isDir.boolValue)
     }
 
+    private static func performRead<Value: Sendable>(_ operation: @escaping @Sendable () -> Value) async -> Value {
+        // Foundation filesystem calls can block indefinitely. Keep each read off the
+        // caller, the write actor, and Swift's cooperative executor.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: operation())
+            }
+        }
+    }
+
     /// Copies each item to the same directory with a " copy" suffix, incrementing on conflict.
     func duplicateItems(_ items: [FileItem]) throws {
         for item in items {
-            let base = (item.name as NSString).deletingPathExtension
-            let ext = (item.name as NSString).pathExtension
-            let copyName = ext.isEmpty ? "\(base) copy" : "\(base) copy.\(ext)"
+            let copyName = name(item.name, adding: " copy")
             var candidate = item.url.deletingLastPathComponent().appendingPathComponent(copyName)
             var counter = 2
             while true {
@@ -161,7 +209,7 @@ actor FileSystemService {
                 } catch let error as NSError
                     where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
                     guard counter <= 1000 else { throw error }
-                    let numberedName = ext.isEmpty ? "\(base) copy \(counter)" : "\(base) copy \(counter).\(ext)"
+                    let numberedName = name(item.name, adding: " copy \(counter)")
                     candidate = item.url.deletingLastPathComponent().appendingPathComponent(numberedName)
                     counter += 1
                 }
@@ -171,16 +219,50 @@ actor FileSystemService {
 
     /// Sets macOS Finder color tags on a file.
     func setTags(_ tags: [String], for url: URL) throws {
-        try (url as NSURL).setResourceValue(tags as NSArray, forKey: .tagNamesKey)
+        // NSURL's tag setter rewrites every tag as uncolored. Finder stores color
+        // indices after a newline in the same binary plist as the tag names.
+        let attribute = "com.apple.metadata:_kMDItemUserTags"
+        let palette = ["Gray": 1, "Green": 2, "Purple": 3, "Blue": 4, "Yellow": 5, "Red": 6, "Orange": 7]
+        try url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { throw POSIXError(.EINVAL) }
+            let existing = try readTags(at: path, attribute: attribute)
+            var entriesByName: [String: String] = [:]
+            for entry in existing {
+                var name = entry
+                if let newline = entry.lastIndex(of: "\n"),
+                   let color = Int(entry[entry.index(after: newline)...]), (0...7).contains(color) {
+                    name = String(entry[..<newline])
+                }
+                entriesByName[name] = entry
+            }
+            let entries = tags.map { name in entriesByName[name] ?? "\(name)\n\(palette[name, default: 0])" }
+            let data = try PropertyListSerialization.data(fromPropertyList: entries, format: .binary, options: 0)
+            let result = data.withUnsafeBytes { buffer in
+                setxattr(path, attribute, buffer.baseAddress, buffer.count, 0, 0)
+            }
+            guard result == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
+    }
+
+    private func readTags(at path: UnsafePointer<CChar>, attribute: String) throws -> [String] {
+        let size = getxattr(path, attribute, nil, 0, 0, 0)
+        if size == 0 || (size < 0 && errno == ENOATTR) { return [] }
+        guard size > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        var data = Data(count: size)
+        let read = data.withUnsafeMutableBytes { buffer in
+            getxattr(path, attribute, buffer.baseAddress, buffer.count, 0, 0)
+        }
+        if read < 0 && errno == ENOATTR { return [] }
+        guard read >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        return (try? PropertyListSerialization.propertyList(from: data.prefix(read), options: [], format: nil))
+            as? [String] ?? []
     }
 
     /// Moves files to a destination directory, resolving name conflicts with a counter suffix.
     func move(from sources: [URL], to destination: URL) throws {
         for source in sources {
-            let name = source.lastPathComponent
-            let base = (name as NSString).deletingPathExtension
-            let ext = (name as NSString).pathExtension
-            var candidate = destination.appendingPathComponent(name)
+            let sourceName = source.lastPathComponent
+            var candidate = destination.appendingPathComponent(sourceName)
             var counter = 2
             // Retry on conflict (same pattern as copy()) to avoid TOCTOU from pre-checking existence.
             while true {
@@ -191,9 +273,9 @@ actor FileSystemService {
                     where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
                     guard counter <= 1000 else {
                         throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteFileExistsError,
-                                      userInfo: [NSLocalizedDescriptionKey: "Could not move \"\(name)\": too many conflicts."])
+                                      userInfo: [NSLocalizedDescriptionKey: "Could not move \"\(sourceName)\": too many conflicts."])
                     }
-                    let newName = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+                    let newName = name(sourceName, adding: " \(counter)")
                     candidate = destination.appendingPathComponent(newName)
                     counter += 1
                 }
@@ -201,49 +283,64 @@ actor FileSystemService {
         }
     }
 
-    /// Compresses the given items into an Archive.zip (or Archive N.zip) in the given directory.
-    /// Uses a unique temporary name during compression, then renames to the target name
-    /// (with conflict resolution) to avoid TOCTOU races.
-    func compress(_ items: [FileItem], in directory: URL) async throws {
-        let itemNames = items.map { $0.url.lastPathComponent }
+    /// Restores a trashed item to its exact original path, failing if that path is occupied.
+    func restore(from trashedURL: URL, to originalURL: URL) throws {
+        do {
+            try renameExclusively(from: trashedURL, to: originalURL)
+        } catch let error as POSIXError where error.code == .EXDEV {
+            // Stage across volumes, then publish with the same exclusive rename on the target volume.
+            let workDirectory = try makeWorkDirectory(in: originalURL.deletingLastPathComponent(), purpose: "restore")
+            defer { try? FileManager.default.removeItem(at: workDirectory) }
+            let stagedURL = workDirectory.appendingPathComponent(originalURL.lastPathComponent)
+            try FileManager.default.copyItem(at: trashedURL, to: stagedURL)
+            try renameExclusively(from: stagedURL, to: originalURL)
+            try FileManager.default.removeItem(at: trashedURL)
+        }
+    }
 
-        // Create a unique temporary file name that cannot conflict
-        let tempName = "Archive-\(UUID().uuidString).zip"
-        let tempURL = directory.appendingPathComponent(tempName)
+    /// Compresses the given items into an Archive.zip (or Archive N.zip) in the given directory.
+    func compress(_ items: [FileItem], in directory: URL) async throws {
+        // Keep partial archives and subprocess output together so any failure cleans up both.
+        let workDirectory = try makeWorkDirectory(in: directory, purpose: "archive")
+        defer { try? FileManager.default.removeItem(at: workDirectory) }
+        let tempURL = workDirectory.appendingPathComponent("Archive.zip")
+        let outputURL = workDirectory.appendingPathComponent("zip.log")
+        try Data().write(to: outputURL)
+        let output = try FileHandle(forWritingTo: outputURL)
+        defer { try? output.close() }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         process.currentDirectoryURL = directory
-        var args = ["-r", tempURL.path]
-        args += itemNames
-        process.arguments = args
+        // Treat names as literal paths, including names like "-m", "-", or "*.txt".
+        process.arguments = ["-q", "-r", "-y", "-MM", "-nw", tempURL.path, "--"]
+            + items.map { "./\($0.url.lastPathComponent)" }
+        var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "ZIPOPT")
+        environment.removeValue(forKey: "ZIP")
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        // zip reports errors on stdout too. A file cannot fill up like an unread pipe.
+        process.standardOutput = output
+        process.standardError = output
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        // Use a continuation so the actor is not blocked while zip runs.
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            process.terminationHandler = { p in
-                if p.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                    let msg = String(data: errData, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
-                    continuation.resume(throwing: NSError(
-                        domain: "zip",
-                        code: Int(p.terminationStatus),
-                        userInfo: [NSLocalizedDescriptionKey: msg]
-                    ))
-                }
+        let status = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int32, Error>) in
+            process.terminationHandler = { process in
+                continuation.resume(returning: process.terminationStatus)
             }
             do {
                 try process.run()
             } catch {
                 continuation.resume(throwing: error)
             }
+        }
+        guard status == 0 else {
+            let message = (try? zipDiagnostics(at: outputURL)) ?? ""
+            throw NSError(
+                domain: "zip",
+                code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "zip failed with status \(status)." : message]
+            )
         }
 
         // Rename from temp to a human-readable name, resolving conflicts atomically
@@ -252,13 +349,11 @@ actor FileSystemService {
         var counter = 2
         while true {
             do {
-                try FileManager.default.moveItem(at: tempURL, to: archiveURL)
+                try renameExclusively(from: tempURL, to: archiveURL)
                 break
             } catch let error as NSError
                 where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
                 guard counter <= 1000 else {
-                    // Clean up temp file before throwing
-                    try? FileManager.default.removeItem(at: tempURL)
                     throw NSError(
                         domain: NSCocoaErrorDomain,
                         code: NSFileWriteFileExistsError,
@@ -270,5 +365,81 @@ actor FileSystemService {
                 counter += 1
             }
         }
+    }
+
+    private struct DirectoryIdentity: Hashable {
+        let device: dev_t
+        let inode: ino_t
+    }
+
+    private func directoryIdentity(at url: URL, followLink: Bool) -> DirectoryIdentity? {
+        var info = stat()
+        let result = url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return followLink ? stat(path, &info) : lstat(path, &info)
+        }
+        guard result == 0, info.st_mode & S_IFMT == S_IFDIR else { return nil }
+        return DirectoryIdentity(device: info.st_dev, inode: info.st_ino)
+    }
+
+    private func directoryAncestors(of url: URL) -> Set<DirectoryIdentity> {
+        Set(url.pathComponentURLs.compactMap { directoryIdentity(at: $0, followLink: true) })
+    }
+
+    private func name(_ original: String, adding suffix: String) -> String {
+        let extensionName = (original as NSString).pathExtension
+        let extensionSuffix = extensionName.isEmpty ? "" : "." + extensionName
+        let base = (original as NSString).deletingPathExtension
+        let budget = Int(NAME_MAX) - suffix.utf8.count - extensionSuffix.utf8.count
+        if budget > 0 {
+            return prefix(of: base, fitting: budget) + suffix + extensionSuffix
+        }
+        return prefix(of: original, fitting: Int(NAME_MAX) - suffix.utf8.count) + suffix
+    }
+
+    private func prefix(of name: String, fitting byteLimit: Int) -> String {
+        var remaining = byteLimit
+        return String(name.prefix { character in
+            remaining -= String(character).utf8.count
+            return remaining >= 0
+        })
+    }
+
+    private func makeWorkDirectory(in parent: URL, purpose: String) throws -> URL {
+        let directory = parent.appendingPathComponent(".explorer-\(purpose)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        return directory
+    }
+
+    private func renameExclusively(from source: URL, to destination: URL) throws {
+        // Foundation's move can race an external writer between its existence check and rename.
+        let status = source.withUnsafeFileSystemRepresentation { sourcePath in
+            destination.withUnsafeFileSystemRepresentation { destinationPath in
+                guard let sourcePath, let destinationPath else { return EINVAL }
+                return renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL)) == 0 ? 0 : errno
+            }
+        }
+        let userInfo = [NSFilePathErrorKey: destination.path]
+        switch status {
+        case 0:
+            return
+        case EEXIST:
+            throw CocoaError(.fileWriteFileExists, userInfo: userInfo)
+        default:
+            throw POSIXError(POSIXErrorCode(rawValue: status) ?? .EIO, userInfo: userInfo)
+        }
+    }
+
+    private func zipDiagnostics(at url: URL) throws -> String {
+        let log = try FileHandle(forReadingFrom: url)
+        defer { try? log.close() }
+        let length = try log.seekToEnd()
+        try log.seek(toOffset: length - min(length, 8_192))
+        let data = try log.readToEnd() ?? Data()
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
