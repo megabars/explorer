@@ -32,7 +32,7 @@ jobs:
       - name: Run regression tests
         run: swift test --disable-xctest
       - name: Build universal release app
-        run: bash script/package_release.sh --arch arm64 --arch x86_64
+        run: bash script/package_release.sh --universal
       - name: Verify universal binary
         run: |
           lipo -verify_arch arm64 x86_64 Explorer.app/Contents/MacOS/Explorer

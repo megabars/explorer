@@ -38,6 +38,7 @@ bash script/package_release.sh
 The app is `Explorer.app`; a versioned ZIP and SHA-256 checksum are written to
 `dist/`. Copy `Explorer.app` to your Applications folder to keep it independently
 of the checkout. `build_app.sh --no-launch` also supports build-only workflows.
+Use `bash script/package_release.sh --universal` to build both architectures.
 
 SwiftPM build options can be passed through to the script. For example, if the
 selected SDK is missing the SwiftUI macro plugin, use a compatible installed SDK:
