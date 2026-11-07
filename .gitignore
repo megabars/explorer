@@ -3,5 +3,6 @@
 *.xcworkspace/
 .swiftpm/
 Explorer.app/
+dist/
 DerivedData/
 .DS_Store

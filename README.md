@@ -29,6 +29,16 @@ Finder lacks an editable address bar. Explorer adds one — click anywhere on th
 bash build_app.sh
 ```
 
+To build an optimized app for personal use without launching it:
+
+```bash
+bash script/package_release.sh
+```
+
+The app is `Explorer.app`; a versioned ZIP and SHA-256 checksum are written to
+`dist/`. Copy `Explorer.app` to your Applications folder to keep it independently
+of the checkout. `build_app.sh --no-launch` also supports build-only workflows.
+
 SwiftPM build options can be passed through to the script. For example, if the
 selected SDK is missing the SwiftUI macro plugin, use a compatible installed SDK:
 
@@ -41,6 +51,20 @@ Or open in Xcode:
 ```bash
 open Package.swift
 ```
+
+## Releases
+
+The current version is **1.0.1 (build 2)**. Download packaged builds from
+[GitHub Releases](https://github.com/megabars/explorer/releases).
+
+GitHub Actions runs the regression suite and builds a universal Apple Silicon +
+Intel app for version tags (`v*`), pull requests, and manual workflow runs.
+Version tags must match `CFBundleShortVersionString` in `Info.plist`; successful
+tag builds publish the ZIP and checksum to a GitHub Release. Update both bundle
+version fields and `RELEASE_NOTES.md` before creating the next tag.
+
+Builds have an ad hoc code signature, without Developer ID signing or Apple
+notarization. Local builds are intended for personal use.
 
 ## Stack
 

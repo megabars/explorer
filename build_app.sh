@@ -1,5 +1,13 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+LAUNCH=true
+if [[ "${1:-}" == "--no-launch" ]]; then
+    LAUNCH=false
+    shift
+fi
 
 APP_NAME="Explorer"
 APP_BUNDLE="${APP_NAME}.app"
@@ -16,5 +24,11 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 cp "${BUILD_DIR}/${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 cp "Sources/Explorer/Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 
-echo "Done. Launching ${APP_BUNDLE}..."
-open "${APP_BUNDLE}"
+plutil -lint "${APP_BUNDLE}/Contents/Info.plist"
+codesign --force --sign - "${APP_BUNDLE}"
+codesign --verify --strict "${APP_BUNDLE}"
+
+echo "Built ${APP_BUNDLE}"
+if [[ "$LAUNCH" == true ]]; then
+    open "${APP_BUNDLE}"
+fi
