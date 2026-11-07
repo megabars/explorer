@@ -35,7 +35,8 @@ jobs:
         run: bash script/package_release.sh --universal
       - name: Verify universal binary
         run: |
-          lipo -verify_arch arm64 x86_64 Explorer.app/Contents/MacOS/Explorer
+          lipo Explorer.app/Contents/MacOS/Explorer -verify_arch arm64
+          lipo Explorer.app/Contents/MacOS/Explorer -verify_arch x86_64
           codesign --verify --strict --verbose=2 Explorer.app
           unzip -t dist/*.zip
       - name: Upload build artifacts
