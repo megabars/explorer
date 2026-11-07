@@ -189,7 +189,8 @@ private final class FileDrag: NSObject, NSDraggingInfo {
     let draggingDestinationWindow: NSWindow? = nil
     let draggingLocation = NSPoint.zero
     let draggedImageLocation = NSPoint.zero
-    let draggedImage: NSImage? = nil
+    // Older AppKit SDKs declare this deprecated requirement as nonisolated.
+    nonisolated var draggedImage: NSImage? { nil }
     let draggingSource: Any? = nil
     var draggingFormation: NSDraggingFormation = .default
     var animatesToDestination = false

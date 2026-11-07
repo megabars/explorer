@@ -54,7 +54,7 @@ open Package.swift
 
 ## Releases
 
-The current version is **1.0.1 (build 2)**. Download packaged builds from
+The current version is **1.0.2 (build 3)**. Download packaged builds from
 [GitHub Releases](https://github.com/megabars/explorer/releases).
 
 GitHub Actions runs the regression suite and builds a universal Apple Silicon +
