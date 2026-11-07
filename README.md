@@ -22,6 +22,20 @@ Finder lacks an editable address bar. Explorer adds one — click anywhere on th
 - macOS 14 (Sonoma) or later
 - Xcode 16+ or Swift 6 toolchain
 
+## Interface language
+
+Explorer supports Russian, English, and Spanish. By default it follows the first
+supported language in the macOS preferred-language list, with English as the
+fallback. Regional variants such as `es-MX` and `en-GB` are supported.
+
+Open **Explorer → Settings…** (`⌘,`) and choose **Language** to override the system
+choice. Language names are shown as **Русский**, **English**, and **Español**.
+Quit and reopen Explorer to apply the selection to both the app and standard macOS
+menus. Choose **Same as System** to remove the app-specific override. Other apps
+and the system language are unaffected.
+
+The implementation requirements and verification checklist are in [spec.md](spec.md).
+
 ## Build & Run
 
 ```bash
@@ -55,7 +69,7 @@ open Package.swift
 
 ## Releases
 
-The current version is **1.0.2 (build 3)**. Download packaged builds from
+The current version is **1.1.0 (build 4)**. Download packaged builds from
 [GitHub Releases](https://github.com/megabars/explorer/releases).
 
 GitHub Actions runs the regression suite and builds a universal Apple Silicon +
@@ -66,6 +80,18 @@ version fields and `RELEASE_NOTES.md` before creating the next tag.
 
 Builds have an ad hoc code signature, without Developer ID signing or Apple
 notarization. Local builds are intended for personal use.
+
+## App icon
+
+The app icon combines a blue folder with a compass arrow. Its transparent
+1024 × 1024 master and packaged ICNS live in `Sources/Explorer/Resources/AppIcon`.
+After changing the master PNG, regenerate all macOS icon sizes with:
+
+```bash
+bash script/generate_app_icon.sh
+```
+
+`build_app.sh` includes the icon in the app bundle; release builds use the same icon.
 
 ## Stack
 
@@ -84,6 +110,8 @@ simulated Trash responses. It covers archive safety, restore conflicts, partial
 failures, directory watching, navigation races, filtering, clipboard operations,
 sorting, AppKit row updates and drag/drop, focused-window/text commands, icon navigation,
 Finder tag colors, symlinks, favorites persistence, and path completion.
+Localization tests also cover preferred-language resolution, per-app preference
+storage, catalog/format parity, and Russian/English/Spanish plural forms.
 
 ```bash
 swift test --disable-xctest

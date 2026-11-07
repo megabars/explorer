@@ -12,29 +12,29 @@ struct ExplorerToolbar: ToolbarContent {
             Button {
                 navigation.goBack()
             } label: {
-                Label("Back", systemImage: "chevron.left")
+                Label(L10n.text("Back"), systemImage: "chevron.left")
             }
             .labelStyle(.iconOnly)
             .disabled(!navigation.canGoBack)
-            .help("Back")
+            .help(L10n.text("Back"))
 
             Button {
                 navigation.goForward()
             } label: {
-                Label("Forward", systemImage: "chevron.right")
+                Label(L10n.text("Forward"), systemImage: "chevron.right")
             }
             .labelStyle(.iconOnly)
             .disabled(!navigation.canGoForward)
-            .help("Forward")
+            .help(L10n.text("Forward"))
 
             Button {
                 navigation.goUp()
             } label: {
-                Label("Go Up", systemImage: "arrow.up")
+                Label(L10n.text("Go Up"), systemImage: "arrow.up")
             }
             .labelStyle(.iconOnly)
             .disabled(!navigation.canGoUp)
-            .help("Go Up")
+            .help(L10n.text("Go Up"))
         }
 
         // Address bar — stretches to fill available space.
@@ -52,7 +52,7 @@ struct ExplorerToolbar: ToolbarContent {
 
         // View mode picker + controls on the right
         ToolbarItem(id: "view-mode", placement: .primaryAction) {
-            Picker("View Mode", selection: $browser.viewMode) {
+            Picker(L10n.text("View Mode"), selection: $browser.viewMode) {
                 ForEach(ViewMode.allCases, id: \.self) { mode in
                     Label(mode.label, systemImage: mode.systemImage).tag(mode)
                 }
@@ -60,7 +60,7 @@ struct ExplorerToolbar: ToolbarContent {
             .labelStyle(.iconOnly)
             .pickerStyle(.segmented)
             .frame(width: 70)
-            .help("Switch view mode")
+            .help(L10n.text("Switch view mode"))
         }
 
         ToolbarItem(id: "hidden-files", placement: .primaryAction) {
@@ -68,21 +68,25 @@ struct ExplorerToolbar: ToolbarContent {
                 browser.showHidden.toggle()
                 browser.load(url: navigation.currentURL)
             } label: {
-                Label(browser.showHidden ? "Hide Hidden Files" : "Show Hidden Files",
+                Label(hiddenFilesTitle,
                       systemImage: browser.showHidden ? "eye" : "eye.slash")
             }
             .labelStyle(.iconOnly)
-            .help(browser.showHidden ? "Hide Hidden Files" : "Show Hidden Files")
+            .help(hiddenFilesTitle)
         }
 
         ToolbarItem(id: "new-folder", placement: .primaryAction) {
             Button {
                 browser.newFolder(in: navigation.currentURL)
             } label: {
-                Label("New Folder", systemImage: "folder.badge.plus")
+                Label(L10n.text("New Folder"), systemImage: "folder.badge.plus")
             }
             .labelStyle(.iconOnly)
-            .help("New Folder (⇧⌘N)")
+            .help(L10n.text("New Folder (⇧⌘N)"))
         }
+    }
+
+    private var hiddenFilesTitle: String {
+        browser.showHidden ? L10n.text("Hide Hidden Files") : L10n.text("Show Hidden Files")
     }
 }

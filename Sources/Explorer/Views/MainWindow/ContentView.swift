@@ -62,11 +62,11 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 800, minHeight: 500)
         .safeAreaInset(edge: .bottom) { statusBar }
-        .alert("Error", isPresented: Binding(
+        .alert(L10n.text("Error"), isPresented: Binding(
             get: { browser.errorMessage != nil },
             set: { if !$0 { browser.errorMessage = nil } }
         )) {
-            Button("OK") { browser.errorMessage = nil }
+            Button(L10n.text("OK")) { browser.errorMessage = nil }
         } message: {
             Text(browser.errorMessage ?? "")
         }
@@ -142,16 +142,16 @@ struct ContentView: View {
 
     private var statusText: String {
         if let error = browser.errorMessage {
-            return "Error: \(error)"
+            return L10n.format("Error: %@", error)
         }
         let total = browser.sortedItems.count
         let selected = browser.selection.count
         if selected > 0 {
-            return "\(selected) of \(total) selected"
+            return L10n.format("%d of %d selected", selected, total)
         }
         if !browser.searchQuery.isEmpty {
-            return "\(total) result\(total == 1 ? "" : "s")"
+            return L10n.plural("results.count", count: total)
         }
-        return "\(total) item\(total == 1 ? "" : "s")"
+        return L10n.plural("items.count", count: total)
     }
 }

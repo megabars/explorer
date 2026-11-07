@@ -102,14 +102,14 @@ final class AddressBarViewModel {
         let status = await service.itemStatus(at: url)
         guard revision == request, isCurrent(), !Task.isCancelled else { return nil }
         guard status.exists else {
-            commitError = "This path does not exist."
+            commitError = L10n.text("This path does not exist.")
             return nil
         }
         let directory = status.isDirectory ? url : url.deletingLastPathComponent()
         let readable = await service.isReadable(at: directory)
         guard revision == request, isCurrent(), !Task.isCancelled else { return nil }
         guard readable else {
-            commitError = "This folder cannot be read."
+            commitError = L10n.text("This folder cannot be read.")
             return nil
         }
         cancel()

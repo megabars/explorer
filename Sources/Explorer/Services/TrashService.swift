@@ -7,7 +7,7 @@ final class TrashService {
         let failures: [String]
 
         var errorDescription: String? {
-            "Failed to move to Trash:\n" + failures.joined(separator: "\n")
+            L10n.format("Failed to move to Trash:\n%@", failures.joined(separator: "\n"))
         }
     }
 
@@ -47,7 +47,7 @@ final class TrashService {
             let retry = await recycle([item.url])
             mapping.merge(retry.mapping) { original, _ in original }
             if let error = retry.error {
-                failures.append("\(item.name): \(error.localizedDescription)")
+                failures.append(L10n.format("%@: %@", item.name, error.localizedDescription))
             }
         }
         if !failures.isEmpty {

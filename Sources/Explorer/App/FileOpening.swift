@@ -4,7 +4,9 @@ import AppKit
 enum FileOpening {
     static func open(_ url: URL, onError: @escaping @MainActor (String) -> Void) {
         guard NSWorkspace.shared.open(url) else {
-            onError("Could not open “\(url.lastPathComponent)”. Check that the item exists and an application is available.")
+            onError(L10n.format(
+                "Could not open “%@”. Check that the item exists and an application is available.", url.lastPathComponent
+            ))
             return
         }
     }
@@ -18,7 +20,7 @@ enum FileOpening {
 
     static func openTerminal(at url: URL, onError: @escaping @MainActor (String) -> Void) {
         guard let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
-            onError("Terminal is not available.")
+            onError(L10n.text("Terminal is not available."))
             return
         }
         open([url], with: terminal, onError: onError)

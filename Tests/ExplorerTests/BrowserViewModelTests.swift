@@ -85,7 +85,7 @@ final class BrowserViewModelTests {
         await creation.value
         #expect(vm.items.map(\.name) == ["file-in-B"])
         #expect(vm.renamingItem == nil)
-        #expect(FileManager.default.fileExists(atPath: a.appendingPathComponent("New Folder").path))
+        #expect(FileManager.default.fileExists(atPath: a.appendingPathComponent(L10n.text("New Folder")).path))
     }
 
     @Test
@@ -115,10 +115,10 @@ final class BrowserViewModelTests {
         defer { vm.stopWatching() }
         await vm.load(url: root).value
         await vm.newFolder(in: root).value
-        #expect(vm.renamingItem?.name == "New Folder")
+        #expect(vm.renamingItem?.name == L10n.text("New Folder"))
         vm.cancelRename()
         await vm.newFolder(in: root).value
-        #expect(vm.renamingItem?.name == "New Folder 2")
+        #expect(vm.renamingItem?.name == L10n.format("New Folder %lld", 2))
         #expect(vm.errorMessage == nil)
     }
 
@@ -294,10 +294,10 @@ final class BrowserViewModelTests {
         defer { vm.stopWatching() }
         await vm.load(url: destination).value
         await vm.newFolder(in: destination).value
-        #expect(vm.renamingItem?.name == "New Folder")
+        #expect(vm.renamingItem?.name == L10n.text("New Folder"))
         #expect(vm.selection.count == 1)
         try await Task.sleep(for: .milliseconds(700))
-        #expect(vm.renamingItem?.name == "New Folder")
+        #expect(vm.renamingItem?.name == L10n.text("New Folder"))
         #expect(vm.selection.count == 1)
     }
 

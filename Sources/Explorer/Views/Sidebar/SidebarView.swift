@@ -15,14 +15,14 @@ struct SidebarView: View {
 
     var body: some View {
         List {
-            Section("Favorites") {
+            Section(L10n.text("Favorites")) {
                 ForEach(vm.favorites) { item in
                     sidebarRow(item)
                 }
             }
 
             if !vm.volumes.isEmpty {
-                Section("Locations") {
+                Section(L10n.text("Locations")) {
                     ForEach(vm.volumes) { item in
                         sidebarRow(item)
                     }
@@ -70,9 +70,9 @@ struct SidebarView: View {
         .padding(.vertical, 1)
         .foregroundStyle(navigation.isCurrentLocation(item.url) ? .blue : (available ? .primary : .secondary))
         .opacity(available ? 1.0 : 0.5)
-        .help(available ? "" : "\(item.name) is not available")
+        .help(available ? "" : L10n.format("%@ is not available", item.name))
         .contextMenu(item.section == .favorites ? ContextMenu {
-            Button("Remove from Sidebar", role: .destructive) {
+            Button(L10n.text("Remove from Sidebar"), role: .destructive) {
                 vm.removeFavorite(id: item.id)
             }
         } : nil)

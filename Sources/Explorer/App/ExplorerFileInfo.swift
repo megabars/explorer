@@ -4,13 +4,14 @@ import AppKit
 enum ExplorerFileInfo {
     static func show(for item: FileItem, in window: NSWindow? = NSApp?.keyWindow) {
         guard let window else { return }
+        let dateFormat = Date.FormatStyle(date: .long, time: .shortened).locale(L10n.locale)
         let details: [(String, String?)] = [
-            ("Kind", item.kind),
-            ("Where", item.url.deletingLastPathComponent().path),
-            ("Size", item.isDirectory ? nil : item.fileSize.map(FileSizeFormatter.string(fromByteCount:))),
-            ("Created", item.creationDate?.formatted(date: .long, time: .shortened)),
-            ("Modified", item.contentModificationDate?.formatted(date: .long, time: .shortened)),
-            ("Tags", item.tags.isEmpty ? nil : item.tags.joined(separator: ", "))
+            (L10n.text("Kind"), item.kind),
+            (L10n.text("Where"), item.url.deletingLastPathComponent().path),
+            (L10n.text("Size"), item.isDirectory ? nil : item.fileSize.map(FileSizeFormatter.string(fromByteCount:))),
+            (L10n.text("Created"), item.creationDate?.formatted(dateFormat)),
+            (L10n.text("Modified"), item.contentModificationDate?.formatted(dateFormat)),
+            (L10n.text("Tags"), item.tags.isEmpty ? nil : item.tags.joined(separator: ", "))
         ]
         let rows: [[NSView]] = details.compactMap { label, value in
             guard let value else { return nil }
@@ -28,7 +29,7 @@ enum ExplorerFileInfo {
         let alert = NSAlert()
         alert.messageText = item.name
         alert.accessoryView = grid
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: L10n.text("OK"))
         alert.beginSheetModal(for: window)
     }
 }

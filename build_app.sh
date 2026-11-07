@@ -23,6 +23,8 @@ mkdir -p "${APP_BUNDLE}/Contents/Resources"
 
 cp "${BUILD_DIR}/${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 cp "Sources/Explorer/Resources/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
+cp "Sources/Explorer/Resources/AppIcon/AppIcon.icns" "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
+cp -R "${BUILD_DIR}/${APP_NAME}_${APP_NAME}.bundle" "${APP_BUNDLE}/Contents/Resources/"
 
 plutil -lint "${APP_BUNDLE}/Contents/Info.plist"
 codesign --force --sign - "${APP_BUNDLE}"

@@ -64,7 +64,7 @@ actor FileSystemService {
             fileSize: values.fileSize.map { Int64($0) },
             contentModificationDate: values.contentModificationDate,
             creationDate: values.creationDate,
-            kind: kind ?? "Unknown",
+            kind: kind ?? L10n.text("Unknown"),
             tags: tags ?? []
         )
     }
@@ -86,7 +86,9 @@ actor FileSystemService {
             guard let identity = directoryIdentity(at: item.url, followLink: false),
                   ancestors.contains(identity) else { continue }
             throw CocoaError(.fileWriteUnknown, userInfo: [
-                NSLocalizedDescriptionKey: "Cannot copy “\(item.url.lastPathComponent)” into itself or one of its subfolders."
+                NSLocalizedDescriptionKey: L10n.format(
+                    "Cannot copy “%@” into itself or one of its subfolders.", item.url.lastPathComponent
+                )
             ])
         }
         var copied = 0
@@ -104,7 +106,9 @@ actor FileSystemService {
                         where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
                         guard counter <= 1000 else {
                             throw CocoaError(.fileWriteFileExists, userInfo: [
-                                NSLocalizedDescriptionKey: "Could not copy “\(item.name)”: too many conflicting files in destination."
+                                NSLocalizedDescriptionKey: L10n.format(
+                                    "Could not copy “%@”: too many conflicting files in destination.", item.name
+                                )
                             ])
                         }
                         let newName = name(item.name, adding: " \(counter)")
@@ -116,7 +120,9 @@ actor FileSystemService {
         } catch {
             guard copied > 0 else { throw error }
             throw CocoaError(.fileWriteUnknown, userInfo: [
-                NSLocalizedDescriptionKey: "Copied \(copied) of \(items.count) items.\n\(error.localizedDescription)",
+                NSLocalizedDescriptionKey: L10n.format(
+                    "Copied %lld of %lld items.\n%@", copied, items.count, error.localizedDescription
+                ),
                 NSUnderlyingErrorKey: error
             ])
         }
@@ -272,8 +278,13 @@ actor FileSystemService {
                 } catch let error as NSError
                     where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
                     guard counter <= 1000 else {
-                        throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteFileExistsError,
-                                      userInfo: [NSLocalizedDescriptionKey: "Could not move \"\(sourceName)\": too many conflicts."])
+                        throw NSError(
+                            domain: NSCocoaErrorDomain,
+                            code: NSFileWriteFileExistsError,
+                            userInfo: [NSLocalizedDescriptionKey: L10n.format(
+                                "Could not move \"%@\": too many conflicts.", sourceName
+                            )]
+                        )
                     }
                     let newName = name(sourceName, adding: " \(counter)")
                     candidate = destination.appendingPathComponent(newName)
@@ -335,11 +346,12 @@ actor FileSystemService {
             }
         }
         guard status == 0 else {
-            let message = (try? zipDiagnostics(at: outputURL)) ?? ""
+            let summary = L10n.format("zip failed with status %d.", status)
+            let details = (try? zipDiagnostics(at: outputURL)) ?? ""
             throw NSError(
                 domain: "zip",
                 code: Int(status),
-                userInfo: [NSLocalizedDescriptionKey: message.isEmpty ? "zip failed with status \(status)." : message]
+                userInfo: [NSLocalizedDescriptionKey: details.isEmpty ? summary : summary + "\n" + details]
             )
         }
 
@@ -357,7 +369,7 @@ actor FileSystemService {
                     throw NSError(
                         domain: NSCocoaErrorDomain,
                         code: NSFileWriteFileExistsError,
-                        userInfo: [NSLocalizedDescriptionKey: "Could not find a unique archive name."]
+                        userInfo: [NSLocalizedDescriptionKey: L10n.text("Could not find a unique archive name.")]
                     )
                 }
                 archiveName = "Archive \(counter)"

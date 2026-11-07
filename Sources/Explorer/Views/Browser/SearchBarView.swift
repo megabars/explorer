@@ -12,7 +12,7 @@ struct SearchBarView: View {
                 .foregroundStyle(.secondary)
                 .font(.system(size: 13))
 
-            TextField("Filter", text: $query)
+            TextField(L10n.text("Filter"), text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($isFocused)

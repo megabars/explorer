@@ -50,7 +50,7 @@ struct BrowserContainerView: View {
             Image(systemName: browser.searchQuery.isEmpty ? "folder" : "magnifyingglass")
                 .font(.system(size: 40))
                 .foregroundStyle(.tertiary)
-            Text(browser.searchQuery.isEmpty ? "Empty Folder" : "No Matching Items")
+            Text(browser.searchQuery.isEmpty ? L10n.text("Empty Folder") : L10n.text("No Matching Items"))
                 .font(.title3)
                 .foregroundStyle(.secondary)
         }
@@ -66,7 +66,7 @@ struct BrowserContainerView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Retry") {
+            Button(L10n.text("Retry")) {
                 browser.loadError = nil
                 browser.load(url: navigation.currentURL)
             }

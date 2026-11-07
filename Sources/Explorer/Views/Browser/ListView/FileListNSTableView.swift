@@ -74,7 +74,7 @@ struct FileListNSTableView: NSViewRepresentable {
         tableView.intercellSpacing = NSSize(width: 3, height: 2)
 
         let tagsCol = NSTableColumn(identifier: .init("tags"))
-        tagsCol.title = "Tags"
+        tagsCol.title = L10n.text("Tags")
         let tagsWidth = CGFloat(Self.visibleTagLimit) * Self.tagDotSize
             + CGFloat(Self.visibleTagLimit - 1) * Self.tagDotSpacing + 6
         tagsCol.maxWidth = tagsWidth
@@ -82,27 +82,27 @@ struct FileListNSTableView: NSViewRepresentable {
         tagsCol.width = tagsWidth
 
         let nameCol = NSTableColumn(identifier: .init("name"))
-        nameCol.title = "Name"
+        nameCol.title = L10n.text("Name")
         nameCol.width = 300
         nameCol.minWidth = 80
         nameCol.resizingMask = .autoresizingMask
         nameCol.sortDescriptorPrototype = NSSortDescriptor(key: "name", ascending: true)
 
         let dateCol = NSTableColumn(identifier: .init("date"))
-        dateCol.title = "Date Modified"
+        dateCol.title = L10n.text("Date Modified")
         dateCol.width = 155
         dateCol.minWidth = 80
         dateCol.sortDescriptorPrototype = NSSortDescriptor(key: "dateModified", ascending: false)
 
         let sizeCol = NSTableColumn(identifier: .init("size"))
-        sizeCol.title = "Size"
+        sizeCol.title = L10n.text("Size")
         sizeCol.width = 75
         sizeCol.minWidth = 50
         sizeCol.headerCell.alignment = .right
         sizeCol.sortDescriptorPrototype = NSSortDescriptor(key: "size", ascending: true)
 
         let kindCol = NSTableColumn(identifier: .init("kind"))
-        kindCol.title = "Kind"
+        kindCol.title = L10n.text("Kind")
         kindCol.width = 130
         kindCol.minWidth = 60
         kindCol.sortDescriptorPrototype = NSSortDescriptor(key: "kind", ascending: true)
@@ -172,6 +172,7 @@ struct FileListNSTableView: NSViewRepresentable {
 
         private let dateFormatter: DateFormatter = {
             let f = DateFormatter()
+            f.locale = L10n.locale
             f.dateStyle = .short
             f.timeStyle = .short
             return f
@@ -545,14 +546,14 @@ struct FileListNSTableView: NSViewRepresentable {
 
             // Right-click on empty space — show background context menu
             guard displayedItems.indices.contains(row) else {
-                menu.addItem(withTitle: "New Folder", action: #selector(menuNewFolder(_:)), keyEquivalent: "")
+                menu.addItem(withTitle: L10n.text("New Folder"), action: #selector(menuNewFolder(_:)), keyEquivalent: "")
                     .target = self
                 menu.addItem(.separator())
-                let pasteItem = menu.addItem(withTitle: "Paste", action: canPaste ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
+                let pasteItem = menu.addItem(withTitle: L10n.text("Paste"), action: canPaste ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
                 pasteItem.target = self
                 if !canPaste { pasteItem.isEnabled = false }
                 menu.addItem(.separator())
-                let termItem = menu.addItem(withTitle: "Open in Terminal", action: #selector(menuOpenInTerminal(_:)), keyEquivalent: "")
+                let termItem = menu.addItem(withTitle: L10n.text("Open in Terminal"), action: #selector(menuOpenInTerminal(_:)), keyEquivalent: "")
                 termItem.representedObject = parent.currentURL
                 termItem.target = self
                 return
@@ -566,20 +567,20 @@ struct FileListNSTableView: NSViewRepresentable {
                 parent.onSelectionAnchorChanged(item.url)
             }
 
-            menu.addItem(withTitle: "Open", action: #selector(menuOpen(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: L10n.text("Open"), action: #selector(menuOpen(_:)), keyEquivalent: "")
                 .representedObject = item.url
 
             // "Open With ▶" submenu — for files only (not directories/packages)
             if !item.isDirectory && !item.isPackage {
                 let apps = NSWorkspace.shared.urlsForApplications(toOpen: item.url)
                 if !apps.isEmpty {
-                    let openWithItem = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
-                    let submenu = NSMenu(title: "Open With")
+                    let openWithItem = NSMenuItem(title: L10n.text("Open With"), action: nil, keyEquivalent: "")
+                    let submenu = NSMenu(title: L10n.text("Open With"))
                     let defaultAppURL = NSWorkspace.shared.urlForApplication(toOpen: item.url)
                     for appURL in apps {
                         let appName = (Bundle(url: appURL)?.infoDictionary?["CFBundleName"] as? String)
                                       ?? appURL.deletingPathExtension().lastPathComponent
-                        let title = (appURL == defaultAppURL) ? "\(appName) (default)" : appName
+                        let title = appURL == defaultAppURL ? L10n.format("%@ (default)", appName) : appName
                         let mi = NSMenuItem(title: title, action: #selector(menuOpenWith(_:)), keyEquivalent: "")
                         mi.representedObject = [item.url, appURL] as [URL]
                         mi.target = self
@@ -595,56 +596,56 @@ struct FileListNSTableView: NSViewRepresentable {
             menu.addItem(.separator())
 
             // Clipboard
-            menu.addItem(withTitle: "Cut", action: #selector(menuCut(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: L10n.text("Cut"), action: #selector(menuCut(_:)), keyEquivalent: "")
                 .representedObject = item.url
-            menu.addItem(withTitle: "Copy", action: #selector(menuCopy(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: L10n.text("Copy"), action: #selector(menuCopy(_:)), keyEquivalent: "")
                 .representedObject = item.url
-            let pasteItem = menu.addItem(withTitle: "Paste", action: canPaste ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
+            let pasteItem = menu.addItem(withTitle: L10n.text("Paste"), action: canPaste ? #selector(menuPaste(_:)) : nil, keyEquivalent: "")
             if !canPaste { pasteItem.isEnabled = false }
             menu.addItem(.separator())
 
-            menu.addItem(withTitle: "Duplicate", action: #selector(menuDuplicate(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: L10n.text("Duplicate"), action: #selector(menuDuplicate(_:)), keyEquivalent: "")
                 .representedObject = item.url
-            menu.addItem(withTitle: "Compress...", action: #selector(menuCompress(_:)), keyEquivalent: "")
-                .representedObject = item.url
-            menu.addItem(.separator())
-
-            menu.addItem(withTitle: "Rename", action: #selector(menuRename(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: L10n.text("Compress..."), action: #selector(menuCompress(_:)), keyEquivalent: "")
                 .representedObject = item.url
             menu.addItem(.separator())
 
-            menu.addItem(withTitle: "Move to Trash", action: #selector(menuTrash(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: L10n.text("Rename"), action: #selector(menuRename(_:)), keyEquivalent: "")
                 .representedObject = item.url
-            menu.addItem(withTitle: "Get Info", action: #selector(menuGetInfo(_:)), keyEquivalent: "")
+            menu.addItem(.separator())
+
+            menu.addItem(withTitle: L10n.text("Move to Trash"), action: #selector(menuTrash(_:)), keyEquivalent: "")
+                .representedObject = item.url
+            menu.addItem(withTitle: L10n.text("Get Info"), action: #selector(menuGetInfo(_:)), keyEquivalent: "")
                 .representedObject = item.url
 
             // Tags submenu
             let tagsMenu = NSMenu()
             for tagName in ["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray"] {
-                let tagItem = NSMenuItem(title: tagName, action: #selector(menuToggleTag(_:)), keyEquivalent: "")
+                let tagItem = NSMenuItem(title: L10n.text(tagName), action: #selector(menuToggleTag(_:)), keyEquivalent: "")
                 tagItem.representedObject = [item.url, tagName, item] as [Any]
                 tagItem.state = item.tags.contains(tagName) ? .on : .off
                 tagItem.target = self
                 tagsMenu.addItem(tagItem)
             }
             tagsMenu.addItem(.separator())
-            let clearTagItem = NSMenuItem(title: "None", action: #selector(menuClearTags(_:)), keyEquivalent: "")
+            let clearTagItem = NSMenuItem(title: L10n.text("None"), action: #selector(menuClearTags(_:)), keyEquivalent: "")
             clearTagItem.representedObject = [item.url, item] as [Any]
             clearTagItem.target = self
             tagsMenu.addItem(clearTagItem)
-            let tagsMenuItem = NSMenuItem(title: "Tags", action: nil, keyEquivalent: "")
+            let tagsMenuItem = NSMenuItem(title: L10n.text("Tags"), action: nil, keyEquivalent: "")
             tagsMenuItem.submenu = tagsMenu
             menu.addItem(tagsMenuItem)
 
             if item.isDirectory, parent.onAddToSidebar != nil {
                 menu.addItem(.separator())
-                menu.addItem(withTitle: "Add to Sidebar", action: #selector(menuAddToSidebar(_:)), keyEquivalent: "")
+                menu.addItem(withTitle: L10n.text("Add to Sidebar"), action: #selector(menuAddToSidebar(_:)), keyEquivalent: "")
                     .representedObject = item.url
             }
 
             if item.isDirectory {
                 menu.addItem(.separator())
-                menu.addItem(withTitle: "Open in Terminal", action: #selector(menuOpenInTerminal(_:)), keyEquivalent: "")
+                menu.addItem(withTitle: L10n.text("Open in Terminal"), action: #selector(menuOpenInTerminal(_:)), keyEquivalent: "")
                     .representedObject = item.url
             }
 

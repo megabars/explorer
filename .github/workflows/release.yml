@@ -38,6 +38,13 @@ jobs:
           lipo Explorer.app/Contents/MacOS/Explorer -verify_arch arm64
           lipo Explorer.app/Contents/MacOS/Explorer -verify_arch x86_64
           codesign --verify --strict --verbose=2 Explorer.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' Explorer.app/Contents/Info.plist)" = AppIcon
+          cmp Sources/Explorer/Resources/AppIcon/AppIcon.icns Explorer.app/Contents/Resources/AppIcon.icns
+          for LANGUAGE in en ru es; do
+            for TABLE in Localizable.strings Localizable.stringsdict; do
+              test -s "Explorer.app/Contents/Resources/Explorer_Explorer.bundle/$LANGUAGE.lproj/$TABLE"
+            done
+          done
           unzip -t dist/*.zip
       - name: Upload build artifacts
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

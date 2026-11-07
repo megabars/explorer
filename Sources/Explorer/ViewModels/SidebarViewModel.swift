@@ -48,9 +48,7 @@ final class SidebarViewModel {
     func addFavorite(url: URL) {
         let path = url.standardizedFileURL.path
         guard !favorites.contains(where: { $0.url.standardizedFileURL.path == path }) else { return }
-        let name = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
-        let item = SidebarItem(id: url, url: url, name: name, systemImage: "folder", section: .favorites)
-        favorites.append(item)
+        favorites.append(SidebarItem.favorite(at: url))
         saveFavorites()
     }
 
@@ -80,9 +78,7 @@ final class SidebarViewModel {
             }
             let key = url.standardizedFileURL.path
             guard seen.insert(key).inserted else { return nil }
-            let icon = defaultIcon(for: url)
-            let name = icon == "house" ? "Home" : (url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent)
-            return SidebarItem(id: url, url: url, name: name, systemImage: icon, section: .favorites)
+            return SidebarItem.favorite(at: url)
         }
     }
 
@@ -90,16 +86,5 @@ final class SidebarViewModel {
         // Use absoluteString for lossless URL round-trip (handles percent-encoded characters)
         let paths = favorites.map(\.url.absoluteString)
         defaults.set(paths, forKey: Self.defaultsKey)
-    }
-
-    private static func defaultIcon(for url: URL) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        switch url.standardizedFileURL.path {
-        case home.standardizedFileURL.path: return "house"
-        case home.appendingPathComponent("Desktop").standardizedFileURL.path: return "menubar.dock.rectangle"
-        case home.appendingPathComponent("Documents").standardizedFileURL.path: return "doc"
-        case home.appendingPathComponent("Downloads").standardizedFileURL.path: return "arrow.down.circle"
-        default: return "folder"
-        }
     }
 }

@@ -97,6 +97,26 @@ Explorer.app/Contents/Info.plist       ← from Sources/Explorer/Resources/Info.
 ```
 Without this, `NSApplication` does not get foreground activation policy and the window never appears.
 
+## Localization
+
+`ExplorerEntryPoint.main()` normalizes invalid app language overrides and freezes
+`L10n` before starting the SwiftUI app. `LanguagePreferences` reads the app's own
+`AppleLanguages` domain for a manual selection and the global domain separately
+for system mode; it only writes/removes the app-domain value. Settings changes
+take effect on the next launch and must not reset active browser/window state.
+
+Use `L10n.text` for English source keys, `L10n.format` for argument-bearing strings,
+and `L10n.plural` for the `items.count`/`results.count` catalogs. Resource tables are
+in `Resources/Localization/{en,ru,es}.lproj`. Keep keys and format specifiers in
+sync, and keep actual paths, filenames, third-party app names and stored Finder
+tag values out of translation lookups. Standard palette *labels* are localized.
+Use `L10n.locale` when formatting UI dates and sizes.
+
+SwiftPM creates `Explorer_Explorer.bundle`; `build_app.sh` copies it into
+`Explorer.app/Contents/Resources`. `LocalizedStrings` resolves this embedded
+bundle before the development-only `Bundle.module` fallback. Both the app's
+`CFBundleLocalizations` and the package's `defaultLocalization` must stay current.
+
 ## Tests
 
 `Tests/ExplorerTests` uses Swift Testing. Run `swift test --disable-xctest`. Tests use temporary directories, named pasteboards, and simulated trash outcomes. They cover archive safety, restore conflicts, partial trash failures, directory events, stale loads, selection/filtering, clipboard ownership, sort ordering, AppKit row/rename/drop behavior, text commands, and address completion.

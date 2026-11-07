@@ -67,16 +67,16 @@ struct FileGridView: View {
                 return .handled
             }
             .contextMenu {
-                Button("New Folder") {
+                Button(L10n.text("New Folder")) {
                     browser.newFolder(in: navigation.currentURL)
                 }
                 Divider()
-                Button("Paste") {
+                Button(L10n.text("Paste")) {
                     browser.paste(into: navigation.currentURL)
                 }
                 .disabled(!browser.canPaste)
                 Divider()
-                Button("Open in Terminal") {
+                Button(L10n.text("Open in Terminal")) {
                     FileOpening.openTerminal(at: navigation.currentURL) { browser.errorMessage = $0 }
                 }
             }
@@ -152,18 +152,18 @@ struct FileGridView: View {
 
     @ViewBuilder
     private func itemMenu(for item: FileItem) -> some View {
-        Button("Open") {
+        Button(L10n.text("Open")) {
             browser.open(item, navigation: navigation)
         }
         if !item.isDirectory && !item.isPackage {
             let apps = browser.openWithApps(for: item.url)
             if !apps.isEmpty {
                 let defaultApp = NSWorkspace.shared.urlForApplication(toOpen: item.url)
-                Menu("Open With") {
+                Menu(L10n.text("Open With")) {
                     ForEach(apps, id: \.self) { appURL in
                         let name = (Bundle(url: appURL)?.infoDictionary?["CFBundleName"] as? String)
                                    ?? appURL.deletingPathExtension().lastPathComponent
-                        Button(appURL == defaultApp ? "\(name) (default)" : name) {
+                        Button(appURL == defaultApp ? L10n.format("%@ (default)", name) : name) {
                             FileOpening.open([item.url], with: appURL) { browser.errorMessage = $0 }
                         }
                     }
@@ -171,39 +171,39 @@ struct FileGridView: View {
             }
         }
         Divider()
-        Button("Cut") {
+        Button(L10n.text("Cut")) {
             selectForContextAction(item)
             browser.cut()
         }
-        Button("Copy") {
+        Button(L10n.text("Copy")) {
             selectForContextAction(item)
             browser.copy()
         }
-        Button("Paste") { browser.paste(into: navigation.currentURL) }
+        Button(L10n.text("Paste")) { browser.paste(into: navigation.currentURL) }
             .disabled(!browser.canPaste)
         Divider()
-        Button("Duplicate") {
+        Button(L10n.text("Duplicate")) {
             selectForContextAction(item)
             browser.duplicate()
         }
-        Button("Compress...") {
+        Button(L10n.text("Compress...")) {
             selectForContextAction(item)
             browser.compress(currentURL: navigation.currentURL)
         }
         Divider()
-        Button("Rename") {
+        Button(L10n.text("Rename")) {
             browser.startRename(item)
         }
         Divider()
-        Button("Move to Trash") {
+        Button(L10n.text("Move to Trash")) {
             selectForContextAction(item)
             browser.trash(items: browser.selectedItems)
         }
-        Button("Get Info") {
+        Button(L10n.text("Get Info")) {
             ExplorerFileInfo.show(for: item)
         }
         // Tags submenu
-        Menu("Tags") {
+        Menu(L10n.text("Tags")) {
             ForEach(["Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray"], id: \.self) { tagName in
                 Button {
                     var tags = item.tags
@@ -215,7 +215,7 @@ struct FileGridView: View {
                     browser.setTags(tags, for: item)
                 } label: {
                     HStack {
-                        Text(tagName)
+                        Text(L10n.text(tagName))
                         if item.tags.contains(tagName) {
                             Image(systemName: "checkmark")
                         }
@@ -223,15 +223,15 @@ struct FileGridView: View {
                 }
             }
             Divider()
-            Button("None") { browser.setTags([], for: item) }
+            Button(L10n.text("None")) { browser.setTags([], for: item) }
         }
         if item.isDirectory {
             Divider()
-            Button("Add to Sidebar") {
+            Button(L10n.text("Add to Sidebar")) {
                 sidebar.addFavorite(url: item.url)
             }
             Divider()
-            Button("Open in Terminal") {
+            Button(L10n.text("Open in Terminal")) {
                 FileOpening.openTerminal(at: item.url) { browser.errorMessage = $0 }
             }
         }
@@ -289,9 +289,10 @@ struct FileGridView: View {
                     url = nil
                 }
                 guard error == nil, let url, url.isFileURL, url.path.hasPrefix("/") else {
-                    let reason = error?.localizedDescription ?? "The drag did not provide an absolute file URL."
+                    let reason = error?.localizedDescription
+                        ?? L10n.text("The drag did not provide an absolute file URL.")
                     Task { @MainActor in
-                        browser.errorMessage = "Could not read a dropped file. \(reason)"
+                        browser.errorMessage = L10n.format("Could not read a dropped file. %@", reason)
                     }
                     return
                 }

@@ -1,15 +1,31 @@
 import SwiftUI
 
 @main
+enum ExplorerEntryPoint {
+    @MainActor
+    static func main() {
+        // Repair an invalid app preference before SwiftUI starts AppKit.
+        LanguagePreferences().removeInvalidOverride()
+        _ = L10n.launchSelection
+        ExplorerApp.main()
+    }
+}
+
 struct ExplorerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(\.locale, L10n.locale)
         }
         .defaultSize(width: 1100, height: 700)
         .commands { ExplorerCommands() }
+
+        Settings {
+            SettingsView()
+                .environment(\.locale, L10n.locale)
+        }
     }
 }
 
@@ -39,12 +55,12 @@ private struct ExplorerCommands: Commands {
     }
 
     private func command(
-        _ title: LocalizedStringKey,
+        _ title: String,
         _ action: ExplorerCommand,
         key: KeyEquivalent,
         modifiers: EventModifiers = .command
     ) -> some View {
-        Button(title) { context?.perform(action) }
+        Button(L10n.text(title)) { context?.perform(action) }
             .keyboardShortcut(key, modifiers: modifiers)
             .disabled(context?.available.contains(action) != true)
     }

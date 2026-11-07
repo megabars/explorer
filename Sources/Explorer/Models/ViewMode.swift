@@ -11,8 +11,8 @@ enum ViewMode: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .list: return "List"
-        case .icons: return "Icons"
+        case .list: return L10n.text("List")
+        case .icons: return L10n.text("Icons")
         }
     }
 }

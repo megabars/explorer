@@ -288,11 +288,11 @@ final class BrowserViewModel {
                     try await fs.restore(from: item.trashedURL, to: item.originalURL)
                 } catch {
                     remaining.append(item)
-                    failures.append("\(item.originalURL.lastPathComponent): \(error.localizedDescription)")
+                    failures.append(L10n.format("%@: %@", item.originalURL.lastPathComponent, error.localizedDescription))
                 }
             }
             if !failures.isEmpty {
-                errorMessage = "Undo failed:\n" + failures.joined(separator: "\n")
+                errorMessage = L10n.format("Undo failed:\n%@", failures.joined(separator: "\n"))
                 // Do not overwrite a newer undo record created while restore was running.
                 if lastAction == nil { lastAction = UndoableAction(items: remaining) }
             }
@@ -304,7 +304,7 @@ final class BrowserViewModel {
         let generation = navigationGeneration
         return Task {
             do {
-                var name = "New Folder"
+                var name = L10n.text("New Folder")
                 var counter = 2
                 var newURL: URL = url.appendingPathComponent(name)
                 // Atomic creation: attempt createDirectory; on name conflict retry with a counter.
@@ -320,10 +320,10 @@ final class BrowserViewModel {
                             throw NSError(
                                 domain: NSCocoaErrorDomain,
                                 code: NSFileWriteFileExistsError,
-                                userInfo: [NSLocalizedDescriptionKey: "Could not create a unique folder name."]
+                                userInfo: [NSLocalizedDescriptionKey: L10n.text("Could not create a unique folder name.")]
                             )
                         }
-                        name = "New Folder \(counter)"
+                        name = L10n.format("New Folder %lld", counter)
                         counter += 1
                     }
                 }
@@ -450,7 +450,7 @@ final class BrowserViewModel {
         guard !name.isEmpty, name != item.name else { return nil }
         // Validate: macOS filenames cannot contain '/' or NUL
         guard !name.contains("/"), !name.contains("\0") else {
-            errorMessage = "The name cannot contain \"/\" or a NUL character."
+            errorMessage = L10n.text("The name cannot contain \"/\" or a NUL character.")
             return nil
         }
         let generation = navigationGeneration

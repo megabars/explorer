@@ -51,7 +51,9 @@ struct FileSystemServiceTests {
                 try await service.copy(items: [item(at: source)], to: destination)
                 Issue.record("Expected recursive copy into \(destination.path) to fail")
             } catch {
-                #expect(error.localizedDescription.contains("into itself or one of its subfolders"))
+                #expect(error.localizedDescription == L10n.format(
+                    "Cannot copy “%@” into itself or one of its subfolders.", source.lastPathComponent
+                ))
             }
         }
 
@@ -77,8 +79,11 @@ struct FileSystemServiceTests {
             try await FileSystemService().copy(items: [item(at: existing), item(at: missing)], to: destination)
             Issue.record("Expected missing input to fail the copy")
         } catch {
-            #expect(error.localizedDescription.contains("Copied 1 of 2 items."))
-            #expect(error.localizedDescription.contains("missing.txt"))
+            let underlying = try #require((error as NSError).userInfo[NSUnderlyingErrorKey] as? NSError)
+            #expect(underlying.localizedDescription.contains("missing.txt"))
+            #expect(error.localizedDescription == L10n.format(
+                "Copied %lld of %lld items.\n%@", 1, 2, underlying.localizedDescription
+            ))
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path) == ["first.txt"])
     }
